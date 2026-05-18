@@ -6,6 +6,9 @@ import NearMeFooter from '../components/nearme/NearMeFooter';
 import StarRating from '../components/nearme/StarRating';
 import { MOCK_PROVIDERS } from '../lib/nearMeData';
 
+import femaleAvatar from '../images/fem_avatar.png';
+import MaleAvatar from '../images/male_avatar.png';
+
 import gallery1 from '../images/dodong1.jpg';
 import gallery2 from '../images/dodong2.jpg';
 import gallery3 from '../images/dodong5.jpg';
@@ -20,9 +23,9 @@ const GALLERY_IMGS = [
 ]
 
 const REVIEWS = [
-  { name: 'Jasmine O.', rating: 5, date: 'May 2026', text: 'Excellent work! Fixed the leak quickly and professionally. Highly recommend!', avatar: 'https://media.base44.com/images/public/6a0b0e088a75428ee5031e7a/708290ce6_generated_image.png' },
-  { name: 'Rafael G.', rating: 5, date: 'Apr 2026', text: 'Very reliable and affordable. Will definitely hire again.', avatar: 'https://media.base44.com/images/public/6a0b0e088a75428ee5031e7a/829e9a8a3_generated_image.png' },
-  { name: 'Carla M.', rating: 4, date: 'Apr 2026', text: 'Good service, arrived on time. Clean work with no mess left behind.', avatar: 'https://media.base44.com/images/public/6a0b0e088a75428ee5031e7a/708290ce6_generated_image.png' },
+  { name: 'Jasmine O.', rating: 5, date: 'May 2026', text: 'Excellent work! Fixed the leak quickly and professionally. Highly recommend!', avatar: femaleAvatar },
+  { name: 'Rafael G.', rating: 5, date: 'Apr 2026', text: 'Very reliable and affordable. Will definitely hire again.', avatar: MaleAvatar },
+  { name: 'Carla M.', rating: 4, date: 'Apr 2026', text: 'Good service, arrived on time. Clean work with no mess left behind.', avatar: femaleAvatar },
 ];
 
 export default function NearMeProvider() {
