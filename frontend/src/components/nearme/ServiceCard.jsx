@@ -1,0 +1,61 @@
+import React from 'react';
+import { Link } from 'react-router-dom';
+import { Star, MapPin, CheckCircle, Clock } from 'lucide-react';
+
+const cornerColors = ['bg-bauhaus-red', 'bg-bauhaus-blue', 'bg-bauhaus-yellow'];
+
+export default function ServiceCard({ provider }) {
+  const color = cornerColors[provider.id % 3];
+
+  return (
+    <Link
+      to={`/provider/${provider.id}`}
+      className="block bg-white border-2 md:border-4 border-bauhaus-ink shadow-bauhaus-sm md:shadow-bauhaus-lg transition-all duration-200 hover:-translate-y-1 group"
+    >
+      <div className="p-5 md:p-6">
+        <div className="mb-4 flex items-center justify-between gap-3">
+          <div className={`inline-flex max-w-full items-center gap-1 px-2 py-1 border border-bauhaus-ink text-[10px] font-bold uppercase tracking-wider ${provider.available ? 'bg-bauhaus-yellow text-bauhaus-ink' : 'bg-white/80 text-bauhaus-ink/50'}`}>
+            <Clock className="h-2.5 w-2.5 shrink-0" />
+            <span className="truncate">{provider.available ? 'Available' : 'Busy'}</span>
+          </div>
+          <div className={`h-3 w-3 shrink-0 ${color}`} />
+        </div>
+
+        <div className="flex items-start gap-4">
+          <div className="relative shrink-0">
+            <img src={provider.avatar} alt={provider.name} className="w-16 h-16 object-cover border-2 border-bauhaus-ink grayscale group-hover:grayscale-0 transition-all duration-300" />
+            {provider.verified && (
+              <div className="absolute -bottom-1 -right-1 w-5 h-5 bg-bauhaus-blue rounded-full border-2 border-white flex items-center justify-center">
+                <CheckCircle className="h-3 w-3 text-white" strokeWidth={3} />
+              </div>
+            )}
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="font-black text-sm uppercase tracking-tight text-bauhaus-ink truncate">{provider.name}</div>
+            <div className="font-bold text-xs uppercase tracking-wider text-bauhaus-red mt-0.5">{provider.service}</div>
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 mt-1">
+              <Star className="h-3 w-3 text-bauhaus-yellow fill-bauhaus-yellow shrink-0" />
+              <span className="font-black text-xs text-bauhaus-ink">{provider.rating}</span>
+              <span className="text-bauhaus-ink/30 text-xs">·</span>
+              <span className="font-medium text-xs text-bauhaus-ink/50">{provider.reviews} reviews</span>
+            </div>
+          </div>
+        </div>
+
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between mt-4 pt-4 border-t-2 border-bauhaus-ink/10">
+          <div className="flex min-w-0 items-center gap-1 text-bauhaus-ink/50">
+            <MapPin className="h-3 w-3 shrink-0" />
+            <span className="truncate font-medium text-xs">{provider.distance} km · {provider.location}</span>
+          </div>
+          <div className="shrink-0 font-black text-sm text-bauhaus-ink">₱{provider.rate}<span className="font-medium text-xs text-bauhaus-ink/40">/hr</span></div>
+        </div>
+
+        <div className="flex flex-wrap gap-1 mt-3">
+          {provider.tags?.map((tag) => (
+            <span key={tag} className="px-2 py-0.5 bg-bauhaus-canvas border border-bauhaus-ink/20 font-medium text-[10px] uppercase tracking-wider text-bauhaus-ink/60">{tag}</span>
+          ))}
+        </div>
+      </div>
+    </Link>
+  );
+}

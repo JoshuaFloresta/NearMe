@@ -1,0 +1,107 @@
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;700;900&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 0 0% 94%;
+    --foreground: 0 0% 7%;
+    --card: 0 0% 100%;
+    --card-foreground: 0 0% 7%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 0 0% 7%;
+    --primary: 0 75% 47%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 220 85% 40%;
+    --secondary-foreground: 0 0% 100%;
+    --muted: 0 0% 88%;
+    --muted-foreground: 0 0% 35%;
+    --accent: 43 85% 53%;
+    --accent-foreground: 0 0% 7%;
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 0 0% 7%;
+    --input: 0 0% 7%;
+    --ring: 220 85% 40%;
+    --chart-1: 0 75% 47%;
+    --chart-2: 220 85% 40%;
+    --chart-3: 43 85% 53%;
+    --chart-4: 0 0% 7%;
+    --chart-5: 0 0% 88%;
+    --radius: 0rem;
+    --sidebar-background: 0 0% 94%;
+    --sidebar-foreground: 0 0% 7%;
+    --sidebar-primary: 0 75% 47%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 0 0% 88%;
+    --sidebar-accent-foreground: 0 0% 7%;
+    --sidebar-border: 0 0% 7%;
+    --sidebar-ring: 220 85% 40%;
+
+    --font-outfit: 'Outfit', sans-serif;
+    --bauhaus-red: #D02020;
+    --bauhaus-blue: #1040C0;
+    --bauhaus-yellow: #F0C020;
+    --bauhaus-ink: #121212;
+    --bauhaus-canvas: #F0F0F0;
+  }
+
+  .dark {
+    --background: 0 0% 7%;
+    --foreground: 0 0% 94%;
+    --card: 0 0% 12%;
+    --card-foreground: 0 0% 94%;
+    --popover: 0 0% 12%;
+    --popover-foreground: 0 0% 94%;
+    --primary: 0 75% 47%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 220 85% 40%;
+    --secondary-foreground: 0 0% 100%;
+    --muted: 0 0% 18%;
+    --muted-foreground: 0 0% 65%;
+    --accent: 43 85% 53%;
+    --accent-foreground: 0 0% 7%;
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 0 0% 94%;
+    --input: 0 0% 18%;
+    --ring: 220 85% 40%;
+    --chart-1: 0 75% 47%;
+    --chart-2: 220 85% 40%;
+    --chart-3: 43 85% 53%;
+    --chart-4: 0 0% 94%;
+    --chart-5: 0 0% 18%;
+    --sidebar-background: 0 0% 7%;
+    --sidebar-foreground: 0 0% 94%;
+    --sidebar-primary: 0 75% 47%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 0 0% 18%;
+    --sidebar-accent-foreground: 0 0% 94%;
+    --sidebar-border: 0 0% 94%;
+    --sidebar-ring: 220 85% 40%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    font-family: var(--font-outfit);
+  }
+}
+
+/* Bauhaus dot pattern utility */
+.bauhaus-dots {
+  background-image: radial-gradient(#121212 1.5px, transparent 1.5px);
+  background-size: 20px 20px;
+}
+
+.bauhaus-dots-light {
+  background-image: radial-gradient(rgba(255,255,255,0.3) 1.5px, transparent 1.5px);
+  background-size: 20px 20px;
+}
