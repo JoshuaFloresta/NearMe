@@ -1,6 +1,14 @@
-import React, { useState } from 'react';
-import { Link, useLocation } from 'react-router-dom';
-import { Menu, X, MapPin, Bell, User } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
+import { Menu, X, MapPin, Bell, User, Settings, LogOut, ChevronDown, ShieldCheck } from 'lucide-react';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 
 const navLinks = [
   { label: 'Find Services', href: '/browse' },
@@ -8,9 +16,50 @@ const navLinks = [
   { label: 'About', href: '/about' },
 ];
 
-export default function NearMeNav({ user, onLogout }) {
+const getStoredUser = () => {
+  try {
+    return JSON.parse(localStorage.getItem('nearme_user'));
+  } catch {
+    return null;
+  }
+};
+
+export default function NearMeNav({ user: userProp, onLogout }) {
   const [open, setOpen] = useState(false);
+  const [storedUser, setStoredUser] = useState(() => userProp || getStoredUser());
   const location = useLocation();
+  const navigate = useNavigate();
+  const user = userProp || storedUser;
+
+  useEffect(() => {
+    const syncUser = () => setStoredUser(getStoredUser());
+
+    syncUser();
+    window.addEventListener('storage', syncUser);
+    window.addEventListener('nearme:user-updated', syncUser);
+
+    return () => {
+      window.removeEventListener('storage', syncUser);
+      window.removeEventListener('nearme:user-updated', syncUser);
+    };
+  }, [location.pathname]);
+
+  const logout = () => {
+    localStorage.removeItem('nearme_user');
+    setStoredUser(null);
+    setOpen(false);
+    onLogout?.();
+    window.dispatchEvent(new Event('nearme:user-updated'));
+    navigate('/');
+  };
+
+  const initials = user?.name
+    ?.split(' ')
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0])
+    .join('')
+    .toUpperCase() || 'U';
 
   return (
     <nav className="bg-white border-b-4 border-bauhaus-ink sticky top-0 z-50">
@@ -47,10 +96,45 @@ export default function NearMeNav({ user, onLogout }) {
                   <Bell className="h-4 w-4" />
                   <span className="absolute -top-1 -right-1 w-4 h-4 bg-bauhaus-red rounded-full text-white text-[9px] font-black flex items-center justify-center">3</span>
                 </button>
-                <Link to="/profile" className="flex items-center gap-2 px-4 py-2 border-2 border-bauhaus-ink hover:bg-bauhaus-canvas transition-colors">
-                  <User className="h-4 w-4" />
-                  <span className="font-bold text-xs uppercase tracking-wider">{user.name}</span>
-                </Link>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <button className="flex items-center gap-2 px-3 py-2 border-2 border-bauhaus-ink hover:bg-bauhaus-canvas transition-colors">
+                      <span className="w-7 h-7 border-2 border-bauhaus-ink bg-bauhaus-yellow flex items-center justify-center overflow-hidden">
+                        {user.avatar ? (
+                          <img src={user.avatar} alt={user.name || 'Profile'} className="h-full w-full object-cover" />
+                        ) : (
+                          <span className="font-black text-[10px] text-bauhaus-ink">{initials}</span>
+                        )}
+                      </span>
+                      <span className="font-bold text-xs uppercase tracking-wider max-w-28 truncate">{user.name || 'Profile'}</span>
+                      <ChevronDown className="h-3.5 w-3.5" />
+                    </button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" className="w-56 border-2 border-bauhaus-ink bg-white p-1 shadow-bauhaus-sm rounded-none">
+                    <DropdownMenuLabel className="font-black text-xs uppercase tracking-wider text-bauhaus-ink">
+                      {user.name || 'My Account'}
+                    </DropdownMenuLabel>
+                    <DropdownMenuSeparator className="bg-bauhaus-ink/20" />
+                    <DropdownMenuItem asChild className="cursor-pointer rounded-none font-bold text-xs uppercase tracking-wider focus:bg-bauhaus-canvas">
+                      <Link to="/settings" className="flex items-center gap-2">
+                        <Settings className="h-4 w-4" />
+                        Settings
+                      </Link>
+                    </DropdownMenuItem>
+                    {user.role === 'provider' && (
+                      <DropdownMenuItem asChild className="cursor-pointer rounded-none font-bold text-xs uppercase tracking-wider focus:bg-bauhaus-canvas">
+                        <Link to="/provider-kyc" className="flex items-center gap-2">
+                          <ShieldCheck className="h-4 w-4" />
+                          Provider KYC
+                        </Link>
+                      </DropdownMenuItem>
+                    )}
+                    <DropdownMenuItem onClick={logout} className="cursor-pointer rounded-none font-bold text-xs uppercase tracking-wider text-bauhaus-red focus:bg-bauhaus-canvas focus:text-bauhaus-red">
+                      <LogOut className="h-4 w-4" />
+                      Logout
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
               </>
             ) : (
               <>
@@ -85,14 +169,33 @@ export default function NearMeNav({ user, onLogout }) {
               {link.label}
             </Link>
           ))}
-          <div className="flex gap-3 p-4">
-            <Link to="/login" onClick={() => setOpen(false)} className="flex-1 text-center px-4 py-3 font-bold uppercase text-xs tracking-wider border-2 border-bauhaus-ink hover:bg-bauhaus-canvas transition-colors">
-              Log In
-            </Link>
-            <Link to="/signup" onClick={() => setOpen(false)} className="flex-1 text-center px-4 py-3 bg-bauhaus-red text-white font-bold uppercase text-xs tracking-wider border-2 border-bauhaus-ink shadow-bauhaus-sm">
-              Sign Up
-            </Link>
-          </div>
+          {user ? (
+            <div className="p-4 space-y-3">
+              <Link to="/settings" onClick={() => setOpen(false)} className="flex items-center justify-center gap-2 px-4 py-3 font-bold uppercase text-xs tracking-wider border-2 border-bauhaus-ink hover:bg-bauhaus-canvas transition-colors">
+                <Settings className="h-4 w-4" />
+                Settings
+              </Link>
+              {user.role === 'provider' && (
+                <Link to="/provider-kyc" onClick={() => setOpen(false)} className="flex items-center justify-center gap-2 px-4 py-3 font-bold uppercase text-xs tracking-wider border-2 border-bauhaus-ink hover:bg-bauhaus-canvas transition-colors">
+                  <ShieldCheck className="h-4 w-4" />
+                  Provider KYC
+                </Link>
+              )}
+              <button onClick={logout} className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-bauhaus-red text-white font-bold uppercase text-xs tracking-wider border-2 border-bauhaus-ink shadow-bauhaus-sm">
+                <LogOut className="h-4 w-4" />
+                Logout
+              </button>
+            </div>
+          ) : (
+            <div className="flex gap-3 p-4">
+              <Link to="/login" onClick={() => setOpen(false)} className="flex-1 text-center px-4 py-3 font-bold uppercase text-xs tracking-wider border-2 border-bauhaus-ink hover:bg-bauhaus-canvas transition-colors">
+                Log In
+              </Link>
+              <Link to="/signup" onClick={() => setOpen(false)} className="flex-1 text-center px-4 py-3 bg-bauhaus-red text-white font-bold uppercase text-xs tracking-wider border-2 border-bauhaus-ink shadow-bauhaus-sm">
+                Sign Up
+              </Link>
+            </div>
+          )}
         </div>
       )}
     </nav>

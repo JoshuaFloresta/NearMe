@@ -5,6 +5,7 @@ import { Search, MapPin, Star, SlidersHorizontal, X, List, Navigation } from 'lu
 import NearMeNav from '../components/nearme/NearMeNav';
 import ServiceCard from '../components/nearme/ServiceCard';
 import { MOCK_PROVIDERS, SERVICES } from '../lib/nearMeData';
+import { apiRequest } from '../lib/api';
 
 const DEFAULT_LOCATION = { lat: 14.5995, lng: 120.9842 };
 
@@ -92,6 +93,13 @@ export default function NearMeBrowse() {
   const [radiusKm, setRadiusKm] = useState(10);
   const [userLocation, setUserLocation] = useState(DEFAULT_LOCATION);
   const [locationStatus, setLocationStatus] = useState('Using demo location until location access is allowed.');
+  const [providers, setProviders] = useState(MOCK_PROVIDERS);
+
+  useEffect(() => {
+    apiRequest('/api/providers')
+      .then((data) => setProviders(data.length ? data : MOCK_PROVIDERS))
+      .catch(() => setProviders(MOCK_PROVIDERS));
+  }, []);
 
   useEffect(() => {
     if (!navigator.geolocation) {
@@ -115,7 +123,7 @@ export default function NearMeBrowse() {
   }, []);
 
   const filtered = useMemo(() => {
-    return MOCK_PROVIDERS.map((provider) => {
+    return providers.map((provider) => {
       const distanceFromUser = getDistanceKm(userLocation, provider.coordinates);
       return {
         ...provider,
@@ -130,7 +138,7 @@ export default function NearMeBrowse() {
       if (provider.distance > radiusKm) return false;
       return true;
     }).sort((a, b) => a.distance - b.distance);
-  }, [search, selectedService, maxRate, minRating, availableOnly, radiusKm, userLocation]);
+  }, [providers, search, selectedService, maxRate, minRating, availableOnly, radiusKm, userLocation]);
 
   const resetFilters = () => {
     setSearch('');

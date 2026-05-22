@@ -1,10 +1,11 @@
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { Star, MapPin, CheckCircle, MessageCircle, Calendar, Briefcase, Award, ChevronLeft, Clock, Heart, Share2 } from 'lucide-react';
 import NearMeNav from '../components/nearme/NearMeNav';
 import NearMeFooter from '../components/nearme/NearMeFooter';
 import StarRating from '../components/nearme/StarRating';
 import { MOCK_PROVIDERS } from '../lib/nearMeData';
+import { apiRequest } from '../lib/api';
 
 import femaleAvatar from '../images/fem_avatar.png';
 import MaleAvatar from '../images/male_avatar.png';
@@ -30,11 +31,52 @@ const REVIEWS = [
 
 export default function NearMeProvider() {
   const { id } = useParams();
-  const provider = MOCK_PROVIDERS.find((p) => p.id === parseInt(id)) || MOCK_PROVIDERS[0];
+  const fallbackProvider = useMemo(
+    () => MOCK_PROVIDERS.find((p) => p.id === parseInt(id)) || MOCK_PROVIDERS[0],
+    [id]
+  );
+  const [provider, setProvider] = useState(fallbackProvider);
   const [activeTab, setActiveTab] = useState('about');
   const [showHireModal, setShowHireModal] = useState(false);
   const [hireDate, setHireDate] = useState('');
+  const [hireAddress, setHireAddress] = useState('');
   const [hireNote, setHireNote] = useState('');
+  const [paymentMethod, setPaymentMethod] = useState('cash_on_service');
+
+  useEffect(() => {
+    apiRequest(`/api/providers/${id}`)
+      .then(setProvider)
+      .catch(() => setProvider(fallbackProvider));
+  }, [fallbackProvider, id]);
+
+  const sendBookingRequest = async () => {
+    try {
+      const booking = await apiRequest('/api/bookings', {
+        method: 'POST',
+        body: JSON.stringify({
+          providerId: provider.id,
+          scheduledAt: hireDate,
+          address: hireAddress,
+          note: hireNote,
+          paymentMethod,
+        }),
+      });
+
+      if (paymentMethod === 'gcash_mock') {
+        await apiRequest(`/api/bookings/${booking._id}/payments/mock-gcash`, {
+          method: 'POST',
+          body: JSON.stringify({ referenceNumber: `GCASH-${Date.now()}` }),
+        });
+      }
+
+      setShowHireModal(false);
+      alert(paymentMethod === 'gcash_mock'
+        ? 'Booking request sent and mock GCash payment recorded.'
+        : 'Booking request sent! Please pay cash after service.');
+    } catch (error) {
+      alert(error.message);
+    }
+  };
 
   const cornerColors = ['bg-bauhaus-red', 'bg-bauhaus-blue', 'bg-bauhaus-yellow'];
   const headerColor = ['bg-bauhaus-blue', 'bg-bauhaus-red', 'bg-bauhaus-ink'];
@@ -268,6 +310,8 @@ export default function NearMeProvider() {
               <div>
                 <label className="font-bold text-[10px] uppercase tracking-widest text-bauhaus-ink/50 block mb-1">Address</label>
                 <input
+                  value={hireAddress}
+                  onChange={(e) => setHireAddress(e.target.value)}
                   placeholder="e.g. 15 Rizal St., Brgy. Sta. Cruz, QC"
                   className="w-full px-4 py-3 bg-bauhaus-canvas border-2 border-bauhaus-ink font-medium text-sm outline-none focus:border-bauhaus-blue"
                 />
@@ -282,6 +326,26 @@ export default function NearMeProvider() {
                   className="w-full px-4 py-3 bg-bauhaus-canvas border-2 border-bauhaus-ink font-medium text-sm outline-none focus:border-bauhaus-blue resize-none"
                 />
               </div>
+              <div>
+                <label className="font-bold text-[10px] uppercase tracking-widest text-bauhaus-ink/50 block mb-1">Payment Method</label>
+                <div className="grid grid-cols-2 gap-3">
+                  {[
+                    { value: 'cash_on_service', label: 'Cash on Service' },
+                    { value: 'gcash_mock', label: 'Mock GCash' },
+                  ].map((option) => (
+                    <button
+                      key={option.value}
+                      type="button"
+                      onClick={() => setPaymentMethod(option.value)}
+                      className={`px-3 py-3 border-2 border-bauhaus-ink font-bold text-[10px] uppercase tracking-wider transition-colors ${
+                        paymentMethod === option.value ? 'bg-bauhaus-yellow text-bauhaus-ink' : 'bg-white hover:bg-bauhaus-canvas'
+                      }`}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
             </div>
             <div className="flex gap-3 mt-6">
               <button
@@ -291,7 +355,7 @@ export default function NearMeProvider() {
                 Cancel
               </button>
               <button
-                onClick={() => { setShowHireModal(false); alert('Booking request sent! The provider will be notified.'); }}
+                onClick={sendBookingRequest}
                 className="flex-1 px-4 py-3 bg-bauhaus-red text-white font-bold uppercase text-xs tracking-wider border-2 border-bauhaus-ink shadow-bauhaus-sm transition-all duration-200 hover:bg-bauhaus-red/90 active:translate-x-[2px] active:translate-y-[2px] active:shadow-none"
               >
                 Send Request
