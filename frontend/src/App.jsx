@@ -9,7 +9,6 @@ import NearMeAuth from '@/pages/NearMeAuth';
 import NearMeBrowse from '@/pages/NearMeBrowse';
 import NearMeProvider from '@/pages/NearMeProvider';
 import NearMeMessages from '@/pages/NearMeMessages';
-import NearMeAdmin from '@/pages/NearMeAdmin';
 // Add page imports here
 
 function App() {
@@ -24,7 +23,6 @@ function App() {
           <Route path="/browse" element={<NearMeBrowse />} />
           <Route path="/provider/:id" element={<NearMeProvider />} />
           <Route path="/messages" element={<NearMeMessages />} />
-          <Route path="/admin" element={<NearMeAdmin />} />
           <Route path="*" element={<PageNotFound />} />
         </Routes>
       </Router>

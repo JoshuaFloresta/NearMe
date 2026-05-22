@@ -140,6 +140,13 @@ Run these inside `frontend/`.
 ```bash
 npm run dev
 ```
+Run these inside `backend/`.
+
+```bash
+npm install -g nodemon
+npm install express --save
+```
+
 
 Starts the development server.
 
@@ -147,29 +154,11 @@ Starts the development server.
 npm run build
 ```
 
-Builds the production version into `frontend/dist`.
-
-```bash
-npm run preview
-```
 
 Previews the production build locally.
 
 ```bash
 npm run lint
-```
-
-Runs ESLint.
-
-## Notes
-
-- The active app entry is `frontend/src/main.jsx`.
-- The main route configuration is in `frontend/src/App.jsx`.
-- Static files placed in `frontend/public` can be referenced with root paths like `/favicon.svg`.
-- Images placed inside `frontend/src` should be imported before use, for example:
-
-```js
-import providerImage from '../images/provider.jpg';
 ```
 
 ## Map / Location
