@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
-import { Menu, X, MapPin, Bell, User, Settings, LogOut, ChevronDown, ShieldCheck } from 'lucide-react';
+import { Menu, X, MapPin, Bell, Settings, LogOut, ChevronDown, ShieldCheck, LayoutDashboard } from 'lucide-react';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -9,6 +9,14 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
+import {
+  PROVIDER_DASHBOARD_PATH,
+  PROVIDER_KYC_PATH,
+  PROVIDER_REVIEW_PATH,
+  canAccessProviderDashboard,
+  isProviderUnderReview,
+} from '@/lib/providerAccess';
+import { apiRequest } from '@/lib/api';
 
 const navLinks = [
   { label: 'Find Services', href: '/browse' },
@@ -30,22 +38,39 @@ export default function NearMeNav({ user: userProp, onLogout }) {
   const location = useLocation();
   const navigate = useNavigate();
   const user = userProp || storedUser;
+  const isAdminPage = location.pathname === '/admin';
 
   useEffect(() => {
+    let cancelled = false;
     const syncUser = () => setStoredUser(getStoredUser());
 
     syncUser();
     window.addEventListener('storage', syncUser);
     window.addEventListener('nearme:user-updated', syncUser);
 
+    const stored = getStoredUser();
+    if (stored?.id && !userProp) {
+      apiRequest(`/api/auth/users/${stored.id}`)
+        .then((response) => {
+          if (cancelled || !response?.user) return;
+          localStorage.setItem('nearme_user', JSON.stringify(response.user));
+          setStoredUser(response.user);
+        })
+        .catch(() => {
+          // Keep the cached user if the backend is unavailable.
+        });
+    }
+
     return () => {
+      cancelled = true;
       window.removeEventListener('storage', syncUser);
       window.removeEventListener('nearme:user-updated', syncUser);
     };
-  }, [location.pathname]);
+  }, [location.pathname, userProp]);
 
   const logout = () => {
     localStorage.removeItem('nearme_user');
+    localStorage.removeItem('nearme_token');
     setStoredUser(null);
     setOpen(false);
     onLogout?.();
@@ -60,6 +85,16 @@ export default function NearMeNav({ user: userProp, onLogout }) {
     .map((part) => part[0])
     .join('')
     .toUpperCase() || 'U';
+  const providerHomePath = canAccessProviderDashboard(user)
+    ? PROVIDER_DASHBOARD_PATH
+    : isProviderUnderReview(user)
+    ? PROVIDER_REVIEW_PATH
+    : PROVIDER_KYC_PATH;
+  const providerHomeLabel = canAccessProviderDashboard(user)
+    ? 'Provider Dashboard'
+    : isProviderUnderReview(user)
+    ? 'Application Review'
+    : 'Provider KYC';
 
   return (
     <nav className="bg-white border-b-4 border-bauhaus-ink sticky top-0 z-50">
@@ -75,6 +110,7 @@ export default function NearMeNav({ user: userProp, onLogout }) {
             </div>
           </Link>
 
+          {!isAdminPage && (
           <div className="hidden md:flex items-center gap-1">
             {navLinks.map((link) => (
               <Link
@@ -88,6 +124,7 @@ export default function NearMeNav({ user: userProp, onLogout }) {
               </Link>
             ))}
           </div>
+          )}
 
           <div className="hidden md:flex items-center gap-3">
             {user ? (
@@ -123,9 +160,9 @@ export default function NearMeNav({ user: userProp, onLogout }) {
                     </DropdownMenuItem>
                     {user.role === 'provider' && (
                       <DropdownMenuItem asChild className="cursor-pointer rounded-none font-bold text-xs uppercase tracking-wider focus:bg-bauhaus-canvas">
-                        <Link to="/provider-kyc" className="flex items-center gap-2">
-                          <ShieldCheck className="h-4 w-4" />
-                          Provider KYC
+                        <Link to={providerHomePath} className="flex items-center gap-2">
+                          {canAccessProviderDashboard(user) ? <LayoutDashboard className="h-4 w-4" /> : <ShieldCheck className="h-4 w-4" />}
+                          {providerHomeLabel}
                         </Link>
                       </DropdownMenuItem>
                     )}
@@ -159,7 +196,7 @@ export default function NearMeNav({ user: userProp, onLogout }) {
 
       {open && (
         <div className="md:hidden border-t-4 border-bauhaus-ink bg-white">
-          {navLinks.map((link) => (
+          {!isAdminPage && navLinks.map((link) => (
             <Link
               key={link.label}
               to={link.href}
@@ -176,9 +213,9 @@ export default function NearMeNav({ user: userProp, onLogout }) {
                 Settings
               </Link>
               {user.role === 'provider' && (
-                <Link to="/provider-kyc" onClick={() => setOpen(false)} className="flex items-center justify-center gap-2 px-4 py-3 font-bold uppercase text-xs tracking-wider border-2 border-bauhaus-ink hover:bg-bauhaus-canvas transition-colors">
-                  <ShieldCheck className="h-4 w-4" />
-                  Provider KYC
+                <Link to={providerHomePath} onClick={() => setOpen(false)} className="flex items-center justify-center gap-2 px-4 py-3 font-bold uppercase text-xs tracking-wider border-2 border-bauhaus-ink hover:bg-bauhaus-canvas transition-colors">
+                  {canAccessProviderDashboard(user) ? <LayoutDashboard className="h-4 w-4" /> : <ShieldCheck className="h-4 w-4" />}
+                  {providerHomeLabel}
                 </Link>
               )}
               <button onClick={logout} className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-bauhaus-red text-white font-bold uppercase text-xs tracking-wider border-2 border-bauhaus-ink shadow-bauhaus-sm">

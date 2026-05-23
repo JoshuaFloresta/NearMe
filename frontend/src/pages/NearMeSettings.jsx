@@ -4,7 +4,7 @@ import { Camera, Save, User, Mail, Phone, ChevronLeft } from 'lucide-react';
 import { toast, Toaster } from 'sonner';
 import NearMeNav from '../components/nearme/NearMeNav';
 import NearMeFooter from '../components/nearme/NearMeFooter';
-import { apiRequest } from '../lib/api';
+import { apiRequest, uploadImage } from '../lib/api';
 
 const getStoredUser = () => {
   try {
@@ -18,6 +18,7 @@ export default function NearMeSettings() {
   const navigate = useNavigate();
   const [currentUser, setCurrentUser] = useState(() => getStoredUser());
   const [saving, setSaving] = useState(false);
+  const [uploadingAvatar, setUploadingAvatar] = useState(false);
   const [form, setForm] = useState({
     fname: '',
     lname: '',
@@ -61,23 +62,21 @@ export default function NearMeSettings() {
     setForm({ ...form, [e.target.name]: e.target.value });
   };
 
-  const handleImageChange = (e) => {
+  const handleImageChange = async (e) => {
     const file = e.target.files?.[0];
+    e.target.value = '';
     if (!file) return;
 
-    if (!file.type.startsWith('image/')) {
-      toast.error('Please choose an image file');
-      return;
+    setUploadingAvatar(true);
+    try {
+      const avatarUrl = await uploadImage(file, 'user-profiles');
+      setForm((prev) => ({ ...prev, avatar: avatarUrl }));
+      toast.success('Profile image uploaded');
+    } catch (error) {
+      toast.error(error.message || 'Could not upload image');
+    } finally {
+      setUploadingAvatar(false);
     }
-
-    if (file.size > 1024 * 1024) {
-      toast.error('Please choose an image under 1 MB');
-      return;
-    }
-
-    const reader = new FileReader();
-    reader.onload = () => setForm((prev) => ({ ...prev, avatar: reader.result }));
-    reader.readAsDataURL(file);
   };
 
   const validate = () => {
@@ -167,9 +166,9 @@ export default function NearMeSettings() {
                   <span className="font-black text-4xl text-bauhaus-ink">{initials || 'U'}</span>
                 )}
               </div>
-              <label className="mt-4 inline-flex items-center justify-center gap-2 px-4 py-3 bg-white text-bauhaus-ink font-bold uppercase text-xs tracking-wider border-2 border-bauhaus-ink shadow-[2px_2px_0px_0px_black] cursor-pointer hover:bg-bauhaus-canvas transition-colors">
+              <label className={`mt-4 inline-flex items-center justify-center gap-2 px-4 py-3 bg-white text-bauhaus-ink font-bold uppercase text-xs tracking-wider border-2 border-bauhaus-ink shadow-[2px_2px_0px_0px_black] cursor-pointer hover:bg-bauhaus-canvas transition-colors ${uploadingAvatar ? 'opacity-60 pointer-events-none' : ''}`}>
                 <Camera className="h-4 w-4" />
-                Change Image
+                {uploadingAvatar ? 'Uploading...' : 'Change Image'}
                 <input type="file" accept="image/*" onChange={handleImageChange} className="sr-only" />
               </label>
             </div>

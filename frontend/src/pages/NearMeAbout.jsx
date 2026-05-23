@@ -1,6 +1,6 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
-import { ArrowRight, Target, Eye, Heart, Users, MapPin, ShieldCheck, Star, CheckCircle } from 'lucide-react';
+import { ArrowRight, Target, Eye, Heart, MapPin, ShieldCheck, Star, CheckCircle } from 'lucide-react';
 import NearMeNav from '../components/nearme/NearMeNav';
 import NearMeFooter from '../components/nearme/NearMeFooter';
 

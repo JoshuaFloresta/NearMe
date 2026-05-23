@@ -2,34 +2,37 @@ import express from 'express';
 import crypto from 'crypto';
 import { ObjectId } from 'mongodb';
 import { getDB } from './mongoConnect.js';
+import {
+  hashPassword,
+  normalizeRole,
+  publicUser,
+  requireAuth,
+  requireAdmin,
+  signToken,
+  verifyPassword,
+} from './security.js';
 
 const router = express.Router();
 
-const publicUser = (user) => ({
-  id: user._id,
-  fname: user.fname,
-  lname: user.lname,
-  name: user.name,
-  email: user.email,
-  phone: user.phone,
-  avatar: user.avatar,
-  role: user.role,
-  verified: user.verified,
-});
+const validateAvatar = (avatar) => {
+  if (avatar === undefined || avatar === null || avatar === '') return null;
 
-const hashPassword = (password, salt = crypto.randomBytes(16).toString('hex')) => {
-  const hash = crypto.pbkdf2Sync(password, salt, 100000, 64, 'sha512').toString('hex');
-  return `${salt}:${hash}`;
-};
+  if (typeof avatar !== 'string') {
+    return 'Avatar must be an image URL';
+  }
 
-const verifyPassword = (password, storedPassword) => {
-  if (!storedPassword) return false;
-  if (!storedPassword.includes(':')) return password === storedPassword;
+  const isImageDataUrl = avatar.startsWith('data:image/');
+  const isRemoteImageUrl = /^https?:\/\/.+/i.test(avatar);
 
-  const [salt, originalHash] = storedPassword.split(':');
-  const candidate = hashPassword(password, salt).split(':')[1];
+  if (!isImageDataUrl && !isRemoteImageUrl) {
+    return 'Avatar must be an image URL';
+  }
 
-  return crypto.timingSafeEqual(Buffer.from(candidate), Buffer.from(originalHash));
+  if (isImageDataUrl && avatar.length > 2_800_000) {
+    return 'Avatar image is too large';
+  }
+
+  return null;
 };
 
 const createOtp = () => String(crypto.randomInt(100000, 999999));
@@ -62,7 +65,7 @@ router.post('/otp/send', async (req, res) => {
       success: true,
       message: 'OTP sent successfully',
       expiresAt,
-      mockOtp: code,
+      devOtp: process.env.NODE_ENV === 'production' ? undefined : code,
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -129,6 +132,8 @@ router.post('/signup', async (req, res) => {
       }
     }
 
+    const normalizedRole = normalizeRole(role || 'customer');
+    const isProvider = normalizedRole === 'provider';
     const newUser = {
       fname: fname || '',
       lname: lname || '',
@@ -136,8 +141,10 @@ router.post('/signup', async (req, res) => {
       email: normalizedEmail,
       phone: phone || null,
       password: hashPassword(password),
-      role: role || 'customer',
+      role: normalizedRole,
+      status: 'active',
       verified: false,
+      providerStatus: isProvider ? 'kyc_required' : null,
       emailVerified: true,
       phoneVerified: Boolean(phone),
       createdAt: new Date(),
@@ -152,6 +159,7 @@ router.post('/signup', async (req, res) => {
       message: 'User registered successfully',
       userId: result.insertedId,
       user: publicUser(insertedUser),
+      token: signToken(insertedUser),
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -174,12 +182,36 @@ router.post('/login', async (req, res) => {
       return res.status(401).json({ error: 'Invalid email or password' });
     }
 
+    if (['suspended', 'disabled'].includes(user.status)) {
+      return res.status(403).json({ error: 'This account is not active' });
+    }
+
     res.json({
       success: true,
       message: 'Login successful',
       userId: user._id,
       user: publicUser(user),
+      token: signToken(user),
     });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.get('/users/:id', requireAuth, async (req, res) => {
+  try {
+    if (!ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ error: 'Invalid user ID' });
+    }
+
+    if (!['admin', 'super_admin'].includes(normalizeRole(req.user?.role)) && String(req.user?._id) !== req.params.id) {
+      return res.status(403).json({ error: 'You can only access your own account' });
+    }
+
+    const user = await getDB().collection('users').findOne({ _id: new ObjectId(req.params.id) });
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    res.json({ success: true, user: publicUser(user) });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -201,6 +233,8 @@ router.patch('/users/:id', async (req, res) => {
     if (lname !== undefined) update.lname = lname;
     if (displayName) update.name = displayName;
     if (phone !== undefined) update.phone = phone || null;
+    const avatarError = validateAvatar(avatar);
+    if (avatarError) return res.status(400).json({ error: avatarError });
     if (avatar !== undefined) update.avatar = avatar || '';
 
     if (email !== undefined) {
@@ -236,6 +270,152 @@ router.patch('/users/:id', async (req, res) => {
       message: 'Profile updated successfully',
       user: publicUser(result),
     });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.get('/admin/users', requireAdmin, async (req, res) => {
+  try {
+    const users = await getDB().collection('users')
+      .find({}, { projection: { password: 0 } })
+      .sort({ createdAt: -1 })
+      .toArray();
+
+    res.json(users.map(publicUser));
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.post('/admin/users', requireAdmin, async (req, res) => {
+  try {
+    const { fname, lname, name, email, phone, password, role = 'customer', status = 'active', avatar } = req.body;
+    const normalizedEmail = email?.trim().toLowerCase();
+    const normalizedRole = normalizeRole(role);
+    const displayName = name || [fname, lname].filter(Boolean).join(' ').trim();
+
+    if (!displayName || !normalizedEmail || !password) {
+      return res.status(400).json({ error: 'Name, email, and password are required' });
+    }
+
+    if (!['customer', 'provider', 'admin', 'super_admin'].includes(normalizedRole)) {
+      return res.status(400).json({ error: 'Invalid role' });
+    }
+
+    const avatarError = validateAvatar(avatar);
+    if (avatarError) return res.status(400).json({ error: avatarError });
+
+    const users = getDB().collection('users');
+    const existingUser = await users.findOne({ email: normalizedEmail });
+
+    if (existingUser) {
+      return res.status(409).json({ error: 'Email already registered' });
+    }
+
+    const isProvider = normalizedRole === 'provider';
+    const newUser = {
+      fname: fname || '',
+      lname: lname || '',
+      name: displayName,
+      email: normalizedEmail,
+      phone: phone || null,
+      password: hashPassword(password),
+      role: normalizedRole,
+      status,
+      avatar: avatar || '',
+      verified: ['admin', 'super_admin'].includes(normalizedRole),
+      providerStatus: isProvider ? 'kyc_required' : null,
+      emailVerified: true,
+      phoneVerified: Boolean(phone),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
+    const result = await users.insertOne(newUser);
+    const insertedUser = { ...newUser, _id: result.insertedId };
+    res.status(201).json({ success: true, user: publicUser(insertedUser), token: signToken(insertedUser) });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.patch('/admin/users/:id', requireAdmin, async (req, res) => {
+  try {
+    if (!ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ error: 'Invalid user ID' });
+    }
+
+    const { fname, lname, name, email, phone, role, status, password, avatar } = req.body;
+    const update = { updatedAt: new Date() };
+
+    const avatarError = validateAvatar(avatar);
+    if (avatarError) return res.status(400).json({ error: avatarError });
+
+    if (fname !== undefined) update.fname = fname;
+    if (lname !== undefined) update.lname = lname;
+    if (name !== undefined) update.name = name;
+    if (phone !== undefined) update.phone = phone || null;
+    if (status !== undefined) update.status = status;
+    if (password) update.password = hashPassword(password);
+    if (avatar !== undefined) update.avatar = avatar || '';
+
+    if (role !== undefined) {
+      const normalizedRole = normalizeRole(role);
+      if (!['customer', 'provider', 'admin', 'super_admin'].includes(normalizedRole)) {
+        return res.status(400).json({ error: 'Invalid role' });
+      }
+
+      update.role = normalizedRole;
+      update.providerStatus = normalizedRole === 'provider' ? 'kyc_required' : null;
+      update.verified = ['admin', 'super_admin'].includes(normalizedRole);
+    }
+
+    if (email !== undefined) {
+      const normalizedEmail = email?.trim().toLowerCase();
+      if (!normalizedEmail) {
+        return res.status(400).json({ error: 'Email is required' });
+      }
+
+      const existingUser = await getDB().collection('users').findOne({
+        email: normalizedEmail,
+        _id: { $ne: new ObjectId(req.params.id) },
+      });
+
+      if (existingUser) {
+        return res.status(409).json({ error: 'Email already registered' });
+      }
+
+      update.email = normalizedEmail;
+    }
+
+    const result = await getDB().collection('users').findOneAndUpdate(
+      { _id: new ObjectId(req.params.id) },
+      { $set: update },
+      { returnDocument: 'after' }
+    );
+
+    if (!result) return res.status(404).json({ error: 'User not found' });
+
+    res.json({ success: true, user: publicUser(result) });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.delete('/admin/users/:id', requireAdmin, async (req, res) => {
+  try {
+    if (!ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ error: 'Invalid user ID' });
+    }
+
+    const result = await getDB().collection('users').deleteOne({ _id: new ObjectId(req.params.id) });
+
+    if (result.deletedCount === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    res.json({ success: true, message: 'User deleted' });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

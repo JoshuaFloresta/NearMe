@@ -105,6 +105,8 @@ export const AuthProvider = ({ children }) => {
   const logout = (shouldRedirect = true) => {
     setUser(null);
     setIsAuthenticated(false);
+    localStorage.removeItem('nearme_token');
+    localStorage.removeItem('nearme_user');
     
     if (shouldRedirect) {
       window.location.href = '/';

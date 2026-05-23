@@ -4,6 +4,14 @@ import { MapPin, Eye, EyeOff, User, Wrench, ArrowRight, CheckCircle } from 'luci
 import { toast, Toaster } from 'sonner';
 import { APP_NAME } from '../lib/nearMeData';
 import { apiRequest } from '../lib/api';
+import {
+  PROVIDER_DASHBOARD_PATH,
+  PROVIDER_KYC_PATH,
+  PROVIDER_REVIEW_PATH,
+  isAdminUser,
+  isProviderUnderReview,
+  needsProviderKyc,
+} from '../lib/providerAccess';
 
 export default function NearMeAuth() {
   const location = useLocation();
@@ -15,13 +23,10 @@ export default function NearMeAuth() {
   const [step, setStep] = useState(1);
   const [form, setForm] = useState({ fname: '', lname: '', email: '', phone: '', password: '', otp: '' });
   const [otpPreview, setOtpPreview] = useState('');
-  const [otpMode, setOtpMode] = useState('server');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
   const handleChange = (e) => setForm({ ...form, [e.target.name]: e.target.value });
-
-  const createLocalOtp = () => String(Math.floor(100000 + Math.random() * 900000));
 
   const validateForm = () => {
     if (!form.email.trim()) {
@@ -80,9 +85,10 @@ export default function NearMeAuth() {
     });
 
     localStorage.setItem('nearme_user', JSON.stringify(data.user));
+    if (data.token) localStorage.setItem('nearme_token', data.token);
     window.dispatchEvent(new Event('nearme:user-updated'));
     toast.success('Account created successfully!');
-    navigate('/');
+    navigate(role === 'provider' ? PROVIDER_KYC_PATH : '/');
   };
 
   const handleSubmit = async (e) => {
@@ -101,9 +107,22 @@ export default function NearMeAuth() {
         });
 
         localStorage.setItem('nearme_user', JSON.stringify(data.user));
+        if (data.token) localStorage.setItem('nearme_token', data.token);
         window.dispatchEvent(new Event('nearme:user-updated'));
         toast.success('Login successful!');
-        navigate('/');
+        if (data.user?.role === 'provider') {
+          if (needsProviderKyc(data.user)) {
+            navigate(PROVIDER_KYC_PATH);
+          } else if (isProviderUnderReview(data.user)) {
+            navigate(PROVIDER_REVIEW_PATH);
+          } else {
+            navigate(PROVIDER_DASHBOARD_PATH);
+          }
+        } else if (isAdminUser(data.user)) {
+          navigate('/admin');
+        } else {
+          navigate('/');
+        }
         return;
       }
 
@@ -113,19 +132,9 @@ export default function NearMeAuth() {
           body: JSON.stringify({ email: form.email, phone: form.phone, purpose: 'signup' }),
         });
 
-        setOtpPreview(otpResponse.mockOtp || '');
-        setOtpMode('server');
+        setOtpPreview(otpResponse.devOtp || '');
         setStep(2);
-        toast.success('OTP sent. Use the mock code shown on screen.');
-        return;
-      }
-
-      if (otpMode === 'local') {
-        if (form.otp !== otpPreview) {
-          throw new Error('Invalid OTP code');
-        }
-
-        await completeSignup();
+        toast.success(otpResponse.devOtp ? 'OTP sent. Use the development code shown on screen.' : 'OTP sent.');
         return;
       }
 
@@ -137,27 +146,6 @@ export default function NearMeAuth() {
       await completeSignup();
     } catch (err) {
       const errorMsg = err.message || 'Something went wrong';
-
-      if (!isLogin && step === 1 && errorMsg.includes('/api/auth/otp/send')) {
-        const localOtp = createLocalOtp();
-        setOtpPreview(localOtp);
-        setOtpMode('local');
-        setStep(2);
-        toast.success('Using local mock OTP because backend OTP route is unavailable.');
-        return;
-      }
-
-      if (!isLogin && step === 2 && errorMsg.includes('/api/auth/otp/verify') && form.otp === otpPreview) {
-        try {
-          await completeSignup();
-          return;
-        } catch (signupError) {
-          const signupErrorMsg = signupError.message || 'Could not create account';
-          toast.error(signupErrorMsg);
-          setError(signupErrorMsg);
-          return;
-        }
-      }
 
       toast.error(errorMsg);
       setError(errorMsg);
@@ -225,7 +213,7 @@ export default function NearMeAuth() {
               {!isLogin && step === 2 ? (
                 <>
                   <div className="p-4 bg-bauhaus-yellow border-2 border-bauhaus-ink">
-                    <div className="font-bold text-[10px] uppercase tracking-widest text-bauhaus-ink/60">Mock OTP</div>
+                    <div className="font-bold text-[10px] uppercase tracking-widest text-bauhaus-ink/60">Development OTP</div>
                     <div className="font-black text-3xl tracking-[0.35em] text-bauhaus-ink mt-1">{otpPreview || '------'}</div>
                   </div>
                   <div>
@@ -365,7 +353,7 @@ export default function NearMeAuth() {
               <div className="mt-4 flex items-start gap-2 p-3 bg-bauhaus-blue/10 border-2 border-bauhaus-blue/30">
                 <CheckCircle className="h-4 w-4 text-bauhaus-blue shrink-0 mt-0.5" />
                 <p className="font-medium text-xs text-bauhaus-blue leading-relaxed">
-                  As a provider, you'll undergo ID verification before your profile goes live. You can start adding your services right after registration.
+                  As a provider, you will submit KYC after signup. Your application then stays under review for 3 to 5 days, and your dashboard unlocks after approval.
                 </p>
               </div>
             )}

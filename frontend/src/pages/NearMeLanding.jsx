@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Search, MapPin, Star, ArrowRight, CheckCircle, Shield, Clock, ChevronDown, ChevronUp } from 'lucide-react';
+import { Search, MapPin, Star, ArrowRight, Shield, Clock, ChevronDown, ChevronUp } from 'lucide-react';
 import NearMeNav from '../components/nearme/NearMeNav';
 import NearMeFooter from '../components/nearme/NearMeFooter';
 import StarRating from '../components/nearme/StarRating';
@@ -41,7 +41,6 @@ function FAQItem({ q, a }) {
 
 export default function NearMeLanding() {
   const [searchQuery, setSearchQuery] = useState('');
-  const [selectedService, setSelectedService] = useState('');
 
   return (
     <div className="min-h-screen bg-bauhaus-canvas font-outfit">

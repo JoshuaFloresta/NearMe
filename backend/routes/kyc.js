@@ -2,15 +2,28 @@ import express from 'express';
 import { ObjectId } from 'mongodb';
 import { getDB } from '../mongoConnect.js';
 import { emitAlert } from '../realtime.js';
+import { isAdminRole, requireAdmin, requireAuth } from '../security.js';
 
 const router = express.Router();
 
-router.post('/provider-kyc', async (req, res) => {
+router.post('/provider-kyc', requireAuth, async (req, res) => {
   try {
     const { userId, providerId, fullName, idType, idNumber, address, documents } = req.body;
 
     if (!userId || !fullName || !idType || !idNumber || !address) {
       return res.status(400).json({ error: 'userId, fullName, idType, idNumber, and address are required' });
+    }
+
+    if (!isAdminRole(req.user.role) && String(req.user._id) !== String(userId)) {
+      return res.status(403).json({ error: 'You can only submit KYC for your own account' });
+    }
+
+    const submittedDocuments = Array.isArray(documents) ? documents : [];
+    const requiredSlots = ['frontId', 'backId', 'selfie'];
+    const missingSlots = requiredSlots.filter((slot) => !submittedDocuments.some((doc) => doc.slot === slot && doc.dataUrl));
+
+    if (missingSlots.length > 0) {
+      return res.status(400).json({ error: 'Front ID, Back ID, and Selfie photos are required' });
     }
 
     const submission = {
@@ -20,7 +33,7 @@ router.post('/provider-kyc', async (req, res) => {
       idType,
       idNumber,
       address,
-      documents: Array.isArray(documents) ? documents : [],
+      documents: submittedDocuments,
       status: 'pending',
       reviewedBy: null,
       reviewNote: '',
@@ -30,14 +43,34 @@ router.post('/provider-kyc', async (req, res) => {
 
     const result = await getDB().collection('provider_kyc').insertOne(submission);
     const created = { ...submission, _id: result.insertedId };
+
+    if (ObjectId.isValid(userId)) {
+      await getDB().collection('users').updateOne(
+        { _id: new ObjectId(userId) },
+        {
+          $set: {
+            providerStatus: 'kyc_submitted',
+            kycSubmittedAt: submission.submittedAt,
+            updatedAt: new Date(),
+          },
+        }
+      );
+    }
+
     emitAlert('kyc:submitted', created);
-    res.status(201).json(created);
+    res.status(201).json({
+      ...created,
+      user: {
+        providerStatus: 'kyc_submitted',
+        kycSubmittedAt: submission.submittedAt,
+      },
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-router.get('/admin/provider-kyc', async (req, res) => {
+router.get('/admin/provider-kyc', requireAdmin, async (req, res) => {
   try {
     const query = {};
     if (req.query.status) query.status = req.query.status;
@@ -49,7 +82,7 @@ router.get('/admin/provider-kyc', async (req, res) => {
   }
 });
 
-router.patch('/admin/provider-kyc/:id', async (req, res) => {
+router.patch('/admin/provider-kyc/:id', requireAdmin, async (req, res) => {
   try {
     if (!ObjectId.isValid(req.params.id)) {
       return res.status(400).json({ error: 'Invalid KYC ID' });
@@ -81,6 +114,20 @@ router.patch('/admin/provider-kyc/:id', async (req, res) => {
         ? { _id: new ObjectId(result.providerId) }
         : { id: Number(result.providerId) };
       await getDB().collection('providers').updateOne(providerQuery, { $set: { verified: true, updatedAt: new Date() } });
+    }
+
+    if (ObjectId.isValid(result.userId)) {
+      await getDB().collection('users').updateOne(
+        { _id: new ObjectId(result.userId) },
+        {
+          $set: {
+            providerStatus: status,
+            verified: status === 'approved',
+            kycReviewedAt: result.reviewedAt,
+            updatedAt: new Date(),
+          },
+        }
+      );
     }
 
     emitAlert('kyc:reviewed', result);

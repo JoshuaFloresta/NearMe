@@ -1,60 +1,88 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { Star, MapPin, CheckCircle, MessageCircle, Calendar, Briefcase, Award, ChevronLeft, Clock, Heart, Share2 } from 'lucide-react';
+import { MapPin, CheckCircle, MessageCircle, Calendar, Briefcase, Award, ChevronLeft, Clock, Heart, Share2 } from 'lucide-react';
 import NearMeNav from '../components/nearme/NearMeNav';
 import NearMeFooter from '../components/nearme/NearMeFooter';
 import StarRating from '../components/nearme/StarRating';
-import { MOCK_PROVIDERS } from '../lib/nearMeData';
-import { apiRequest } from '../lib/api';
+import { apiRequest, getStoredToken } from '../lib/api';
+import { getStoredNearMeUser } from '../lib/providerAccess';
 
-import femaleAvatar from '../images/fem_avatar.png';
-import MaleAvatar from '../images/male_avatar.png';
+const emptyProvider = {
+  id: 0,
+  name: 'Provider',
+  avatar: '',
+  service: 'Service',
+  rating: 0,
+  reviews: 0,
+  jobs: 0,
+  rate: 0,
+  distance: 0,
+  location: '',
+  serviceArea: '',
+  verified: false,
+  available: false,
+  bio: '',
+  tags: [],
+  certifications: [],
+  gallery: [],
+  joinedYear: '',
+};
 
-import gallery1 from '../images/dodong1.jpg';
-import gallery2 from '../images/dodong2.jpg';
-import gallery3 from '../images/dodong5.jpg';
-import gallery4 from '../images/dodong4.jpg';
+const providerKey = (provider) => provider.id || provider._id || 0;
 
-
-const GALLERY_IMGS = [
-  gallery1,
-  gallery2,
-  gallery3,
-  gallery4
-]
-
-const REVIEWS = [
-  { name: 'Jasmine O.', rating: 5, date: 'May 2026', text: 'Excellent work! Fixed the leak quickly and professionally. Highly recommend!', avatar: femaleAvatar },
-  { name: 'Rafael G.', rating: 5, date: 'Apr 2026', text: 'Very reliable and affordable. Will definitely hire again.', avatar: MaleAvatar },
-  { name: 'Carla M.', rating: 4, date: 'Apr 2026', text: 'Good service, arrived on time. Clean work with no mess left behind.', avatar: femaleAvatar },
-];
+const formatReviewDate = (review) => {
+  if (review.date) return review.date;
+  const date = new Date(review.createdAt);
+  return Number.isNaN(date.getTime()) ? '' : date.toLocaleDateString(undefined, { month: 'short', year: 'numeric' });
+};
 
 export default function NearMeProvider() {
   const { id } = useParams();
-  const fallbackProvider = useMemo(
-    () => MOCK_PROVIDERS.find((p) => p.id === parseInt(id)) || MOCK_PROVIDERS[0],
-    [id]
-  );
-  const [provider, setProvider] = useState(fallbackProvider);
+  const [provider, setProvider] = useState(emptyProvider);
+  const [reviews, setReviews] = useState([]);
   const [activeTab, setActiveTab] = useState('about');
   const [showHireModal, setShowHireModal] = useState(false);
   const [hireDate, setHireDate] = useState('');
   const [hireAddress, setHireAddress] = useState('');
   const [hireNote, setHireNote] = useState('');
   const [paymentMethod, setPaymentMethod] = useState('cash_on_service');
+  const [customerPhone, setCustomerPhone] = useState('');
 
   useEffect(() => {
-    apiRequest(`/api/providers/${id}`)
-      .then(setProvider)
-      .catch(() => setProvider(fallbackProvider));
-  }, [fallbackProvider, id]);
+    Promise.all([
+      apiRequest(`/api/providers/${id}`),
+      apiRequest(`/api/providers/${id}/reviews`).catch(() => []),
+    ])
+      .then(([providerData, reviewData]) => {
+        setProvider({ ...emptyProvider, ...providerData });
+        setReviews(Array.isArray(reviewData) ? reviewData : []);
+      })
+      .catch(() => {
+        setProvider(emptyProvider);
+        setReviews([]);
+      });
+  }, [id]);
 
   const sendBookingRequest = async () => {
+    const currentUser = getStoredNearMeUser();
+    if (!currentUser || !getStoredToken()) {
+      alert('Please log in before booking a provider.');
+      return;
+    }
+
+    if (!hireDate || !hireAddress.trim() || !customerPhone.trim()) {
+      alert('Preferred date, address, and phone number are required.');
+      return;
+    }
+
     try {
-      const booking = await apiRequest('/api/bookings', {
+      await apiRequest('/api/bookings', {
         method: 'POST',
         body: JSON.stringify({
-          providerId: provider.id,
+          providerId: providerKey(provider),
+          customerName: currentUser.name,
+          customerEmail: currentUser.email,
+          customerPhone,
           scheduledAt: hireDate,
           address: hireAddress,
           note: hireNote,
@@ -62,17 +90,8 @@ export default function NearMeProvider() {
         }),
       });
 
-      if (paymentMethod === 'gcash_mock') {
-        await apiRequest(`/api/bookings/${booking._id}/payments/mock-gcash`, {
-          method: 'POST',
-          body: JSON.stringify({ referenceNumber: `GCASH-${Date.now()}` }),
-        });
-      }
-
       setShowHireModal(false);
-      alert(paymentMethod === 'gcash_mock'
-        ? 'Booking request sent and mock GCash payment recorded.'
-        : 'Booking request sent! Please pay cash after service.');
+      alert('Booking request sent! A conversation with the provider has been opened in Messages.');
     } catch (error) {
       alert(error.message);
     }
@@ -80,7 +99,9 @@ export default function NearMeProvider() {
 
   const cornerColors = ['bg-bauhaus-red', 'bg-bauhaus-blue', 'bg-bauhaus-yellow'];
   const headerColor = ['bg-bauhaus-blue', 'bg-bauhaus-red', 'bg-bauhaus-ink'];
-  const colorIndex = provider.id % 3;
+  const colorIndex = providerKey(provider) % 3;
+  const galleryImages = Array.isArray(provider.gallery) ? provider.gallery.filter(Boolean) : [];
+  const certifications = Array.isArray(provider.certifications) ? provider.certifications : [];
 
   return (
     <div className="min-h-screen bg-bauhaus-canvas font-outfit">
@@ -115,11 +136,17 @@ export default function NearMeProvider() {
               <div className="px-6 pb-6">
                 <div className="flex flex-col sm:flex-row sm:items-end gap-4 -mt-10 sm:-mt-12">
                   <div className="relative">
-                    <img
-                      src={provider.avatar}
-                      alt={provider.name}
-                      className="w-20 h-20 sm:w-24 sm:h-24 object-cover border-4 border-bauhaus-ink bg-white"
-                    />
+                    {provider.avatar ? (
+                      <img
+                        src={provider.avatar}
+                        alt={provider.name}
+                        className="w-20 h-20 sm:w-24 sm:h-24 object-cover border-4 border-bauhaus-ink bg-white"
+                      />
+                    ) : (
+                      <div className="w-20 h-20 sm:w-24 sm:h-24 border-4 border-bauhaus-ink bg-bauhaus-yellow flex items-center justify-center font-black text-xl uppercase">
+                        {(provider.name || 'P').slice(0, 2)}
+                      </div>
+                    )}
                     {provider.verified && (
                       <div className="absolute -bottom-1 -right-1 w-7 h-7 bg-bauhaus-blue border-2 border-white rounded-full flex items-center justify-center">
                         <CheckCircle className="h-4 w-4 text-white" strokeWidth={3} />
@@ -175,23 +202,26 @@ export default function NearMeProvider() {
               <div className="space-y-5">
                 <div className="bg-white border-2 border-bauhaus-ink p-5">
                   <h3 className="font-black text-sm uppercase tracking-tight text-bauhaus-ink mb-2">About</h3>
-                  <p className="font-medium text-sm text-bauhaus-ink/70 leading-relaxed">{provider.bio}</p>
+                  <p className="font-medium text-sm text-bauhaus-ink/70 leading-relaxed">{provider.bio || 'This provider has not added an about section yet.'}</p>
                 </div>
                 <div className="bg-white border-2 border-bauhaus-ink p-5">
                   <h3 className="font-black text-sm uppercase tracking-tight text-bauhaus-ink mb-3">Service Tags</h3>
                   <div className="flex flex-wrap gap-2">
-                    {provider.tags?.map((tag) => (
+                    {(provider.tags || []).map((tag) => (
                       <span key={tag} className="px-3 py-1 bg-bauhaus-canvas border-2 border-bauhaus-ink font-bold text-xs uppercase tracking-wider">
                         {tag}
                       </span>
                     ))}
+                    {(provider.tags || []).length === 0 && (
+                      <span className="font-medium text-sm text-bauhaus-ink/50">No service tags yet.</span>
+                    )}
                   </div>
                 </div>
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                   {[
-                    { icon: MapPin, label: 'Service Area', value: provider.location },
+                    { icon: MapPin, label: 'Service Area', value: provider.serviceArea || provider.location || 'Not set' },
                     { icon: Clock, label: 'Availability', value: provider.available ? 'Available Now' : 'Currently Busy' },
-                    { icon: Award, label: 'Certifications', value: 'TESDA Certified' },
+                    { icon: Award, label: 'Certifications', value: certifications.length ? certifications.join(', ') : 'Not listed' },
                   ].map(({ icon: Icon, label, value }) => (
                     <div key={label} className="bg-bauhaus-canvas border-2 border-bauhaus-ink p-4 flex items-start gap-3">
                       <div className="w-8 h-8 bg-bauhaus-red border-2 border-bauhaus-ink flex items-center justify-center shrink-0">
@@ -209,24 +239,31 @@ export default function NearMeProvider() {
 
             {activeTab === 'gallery' && (
               <div className="grid grid-cols-2 gap-4">
-                {GALLERY_IMGS.map((img, i) => (
+                {galleryImages.map((img, i) => (
                   <div key={i} className="border-2 md:border-4 border-bauhaus-ink overflow-hidden aspect-video hover:-translate-y-1 transition-all duration-200 shadow-bauhaus-sm">
                     <img src={img} alt={`Work sample ${i + 1}`} className="w-full h-full object-cover grayscale hover:grayscale-0 transition-all duration-300" />
                   </div>
                 ))}
+                {galleryImages.length === 0 && (
+                  <div className="col-span-2 border-2 border-dashed border-bauhaus-ink bg-white p-8 text-center font-black text-sm uppercase tracking-tight text-bauhaus-ink/45">
+                    No gallery photos yet
+                  </div>
+                )}
               </div>
             )}
 
             {activeTab === 'reviews' && (
               <div className="space-y-4">
-                {REVIEWS.map((rev, i) => (
+                {reviews.map((rev, i) => (
                   <div key={i} className="bg-white border-2 border-bauhaus-ink p-5">
                     <div className="flex items-start gap-3">
-                      <img src={rev.avatar} alt={rev.name} className="w-10 h-10 object-cover border-2 border-bauhaus-ink shrink-0" />
+                      <div className="w-10 h-10 object-cover border-2 border-bauhaus-ink shrink-0 bg-bauhaus-canvas flex items-center justify-center font-black text-xs uppercase">
+                        {(rev.name || 'U').slice(0, 2)}
+                      </div>
                       <div className="flex-1">
                         <div className="flex items-center justify-between flex-wrap gap-2">
                           <div className="font-black text-sm uppercase tracking-tight text-bauhaus-ink">{rev.name}</div>
-                          <div className="font-medium text-xs text-bauhaus-ink/40">{rev.date}</div>
+                          <div className="font-medium text-xs text-bauhaus-ink/40">{formatReviewDate(rev)}</div>
                         </div>
                         <StarRating rating={rev.rating} size="sm" showNumber={false} />
                         <p className="mt-2 font-medium text-sm text-bauhaus-ink/70 leading-relaxed">{rev.text}</p>
@@ -234,6 +271,11 @@ export default function NearMeProvider() {
                     </div>
                   </div>
                 ))}
+                {reviews.length === 0 && (
+                  <div className="bg-white border-2 border-dashed border-bauhaus-ink p-8 text-center font-black text-sm uppercase tracking-tight text-bauhaus-ink/45">
+                    No reviews yet
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -264,7 +306,7 @@ export default function NearMeProvider() {
                   <Briefcase className="h-4 w-4" /> Hire Now
                 </button>
                 <Link
-                  to={`/messages?provider=${provider.id}`}
+                  to={`/messages?provider=${providerKey(provider)}`}
                   className="w-full flex items-center justify-center gap-2 px-6 py-3 bg-white text-bauhaus-ink font-bold uppercase text-sm tracking-wider border-2 border-bauhaus-ink shadow-[2px_2px_0px_0px_black] transition-all duration-200 hover:bg-bauhaus-canvas active:translate-x-[2px] active:translate-y-[2px] active:shadow-none"
                 >
                   <MessageCircle className="h-4 w-4" /> Message
@@ -276,9 +318,9 @@ export default function NearMeProvider() {
             <div className="bg-bauhaus-blue border-4 border-bauhaus-ink p-5 text-white">
               <div className="font-black text-sm uppercase tracking-tight mb-3">Quick Info</div>
               {[
-                { icon: MapPin, text: `${provider.distance} km away · ${provider.location}` },
+                { icon: MapPin, text: `${provider.distance || 0} km away - ${provider.location || 'Location not set'}` },
                 { icon: Briefcase, text: `${provider.jobs} jobs completed` },
-                { icon: Calendar, text: 'Joined Near Me in 2024' },
+                { icon: Calendar, text: `Joined Near Me${provider.joinedYear ? ` in ${provider.joinedYear}` : ''}` },
               ].map(({ icon: Icon, text }, i) => (
                 <div key={i} className="flex items-center gap-2 mb-2">
                   <Icon className="h-4 w-4 text-bauhaus-yellow shrink-0" />
@@ -327,11 +369,19 @@ export default function NearMeProvider() {
                 />
               </div>
               <div>
+                <label className="font-bold text-[10px] uppercase tracking-widest text-bauhaus-ink/50 block mb-1">Contact Number</label>
+                <input
+                  value={customerPhone}
+                  onChange={(e) => setCustomerPhone(e.target.value)}
+                  placeholder="09XX XXX XXXX"
+                  className="w-full px-4 py-3 bg-bauhaus-canvas border-2 border-bauhaus-ink font-medium text-sm outline-none focus:border-bauhaus-blue"
+                />
+              </div>
+              <div>
                 <label className="font-bold text-[10px] uppercase tracking-widest text-bauhaus-ink/50 block mb-1">Payment Method</label>
                 <div className="grid grid-cols-2 gap-3">
                   {[
                     { value: 'cash_on_service', label: 'Cash on Service' },
-                    { value: 'gcash_mock', label: 'Mock GCash' },
                   ].map((option) => (
                     <button
                       key={option.value}

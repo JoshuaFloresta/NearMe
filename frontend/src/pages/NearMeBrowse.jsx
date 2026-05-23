@@ -4,10 +4,17 @@ import { MapContainer, TileLayer, CircleMarker, Circle, Popup, useMap } from 're
 import { Search, MapPin, Star, SlidersHorizontal, X, List, Navigation } from 'lucide-react';
 import NearMeNav from '../components/nearme/NearMeNav';
 import ServiceCard from '../components/nearme/ServiceCard';
-import { MOCK_PROVIDERS, SERVICES } from '../lib/nearMeData';
 import { apiRequest } from '../lib/api';
 
 const DEFAULT_LOCATION = { lat: 14.5995, lng: 120.9842 };
+
+const providerKey = (provider) => provider?.id || provider?._id || provider?.email || provider?.name || 'provider';
+
+const providerPathId = (provider) => provider.id || provider._id;
+
+const hasCoordinates = (provider) => (
+  Number.isFinite(Number(provider?.coordinates?.lat)) && Number.isFinite(Number(provider?.coordinates?.lng))
+);
 
 function getDistanceKm(from, to) {
   if (!from || !to) return null;
@@ -34,6 +41,8 @@ function RecenterMap({ center }) {
 }
 
 function ProviderMap({ providers, selected, onSelect, userLocation, radiusKm }) {
+  const mappableProviders = providers.filter(hasCoordinates);
+
   return (
     <div className="h-full w-full overflow-hidden border-4 border-bauhaus-ink bg-white">
       <MapContainer center={[userLocation.lat, userLocation.lng]} zoom={12} scrollWheelZoom className="h-full w-full">
@@ -54,17 +63,17 @@ function ProviderMap({ providers, selected, onSelect, userLocation, radiusKm }) 
         >
           <Popup>You are here</Popup>
         </CircleMarker>
-        {providers.map((provider) => (
+        {mappableProviders.map((provider) => (
           <CircleMarker
-            key={provider.id}
-            center={[provider.coordinates.lat, provider.coordinates.lng]}
-            radius={selected?.id === provider.id ? 12 : 9}
+            key={providerKey(provider)}
+            center={[Number(provider.coordinates.lat), Number(provider.coordinates.lng)]}
+            radius={providerKey(selected) === providerKey(provider) ? 12 : 9}
             eventHandlers={{ click: () => onSelect(provider) }}
             pathOptions={{
               color: '#121212',
               fillColor: provider.available ? '#F0C020' : '#D02020',
               fillOpacity: 1,
-              weight: selected?.id === provider.id ? 4 : 2,
+              weight: providerKey(selected) === providerKey(provider) ? 4 : 2,
             }}
           >
             <Popup>
@@ -93,12 +102,20 @@ export default function NearMeBrowse() {
   const [radiusKm, setRadiusKm] = useState(10);
   const [userLocation, setUserLocation] = useState(DEFAULT_LOCATION);
   const [locationStatus, setLocationStatus] = useState('Using demo location until location access is allowed.');
-  const [providers, setProviders] = useState(MOCK_PROVIDERS);
+  const [providers, setProviders] = useState([]);
+  const [services, setServices] = useState([]);
+  const [loadingProviders, setLoadingProviders] = useState(true);
 
   useEffect(() => {
-    apiRequest('/api/providers')
-      .then((data) => setProviders(data.length ? data : MOCK_PROVIDERS))
-      .catch(() => setProviders(MOCK_PROVIDERS));
+    Promise.all([
+      apiRequest('/api/providers').catch(() => []),
+      apiRequest('/api/services').catch(() => []),
+    ])
+      .then(([providerData, serviceData]) => {
+        setProviders(Array.isArray(providerData) ? providerData : []);
+        setServices(Array.isArray(serviceData) ? serviceData : []);
+      })
+      .finally(() => setLoadingProviders(false));
   }, []);
 
   useEffect(() => {
@@ -127,17 +144,19 @@ export default function NearMeBrowse() {
       const distanceFromUser = getDistanceKm(userLocation, provider.coordinates);
       return {
         ...provider,
-        distance: distanceFromUser == null ? provider.distance : Number(distanceFromUser.toFixed(1)),
+        distance: distanceFromUser == null ? Number(provider.distance || 0) : Number(distanceFromUser.toFixed(1)),
       };
     }).filter((provider) => {
-      if (search && !provider.name.toLowerCase().includes(search.toLowerCase()) && !provider.service.toLowerCase().includes(search.toLowerCase())) return false;
+      const name = provider.name || '';
+      const service = provider.service || '';
+      if (search && !name.toLowerCase().includes(search.toLowerCase()) && !service.toLowerCase().includes(search.toLowerCase())) return false;
       if (selectedService && provider.serviceId !== selectedService) return false;
-      if (provider.rate > maxRate) return false;
-      if (provider.rating < minRating) return false;
+      if (Number(provider.rate || 0) > maxRate) return false;
+      if (Number(provider.rating || 0) < minRating) return false;
       if (availableOnly && !provider.available) return false;
-      if (provider.distance > radiusKm) return false;
+      if (hasCoordinates(provider) && provider.distance > radiusKm) return false;
       return true;
-    }).sort((a, b) => a.distance - b.distance);
+    }).sort((a, b) => Number(a.distance || 0) - Number(b.distance || 0));
   }, [providers, search, selectedService, maxRate, minRating, availableOnly, radiusKm, userLocation]);
 
   const resetFilters = () => {
@@ -171,7 +190,7 @@ export default function NearMeBrowse() {
               className="border-2 border-bauhaus-ink bg-white font-bold text-xs uppercase tracking-wider px-3 py-2 outline-none"
             >
               <option value="">All Services</option>
-              {SERVICES.map((service) => <option key={service.id} value={service.id}>{service.label}</option>)}
+              {services.map((service) => <option key={service.id} value={service.id}>{service.label}</option>)}
             </select>
             <button
               onClick={() => setShowFilters(!showFilters)}
@@ -270,7 +289,11 @@ export default function NearMeBrowse() {
         <div className={`flex gap-6 ${viewMode === 'split' ? 'flex-row' : 'flex-col'}`}>
           {viewMode !== 'map' && (
             <div className={`${viewMode === 'split' ? 'w-full lg:w-[420px] shrink-0' : 'w-full'}`}>
-              {filtered.length === 0 ? (
+              {loadingProviders ? (
+                <div className="flex flex-col items-center justify-center py-16 text-center">
+                  <div className="font-black text-lg uppercase tracking-tight text-bauhaus-ink">Loading Providers...</div>
+                </div>
+              ) : filtered.length === 0 ? (
                 <div className="flex flex-col items-center justify-center py-16 text-center">
                   <div className="w-16 h-16 bg-bauhaus-canvas border-4 border-bauhaus-ink flex items-center justify-center mb-4">
                     <Search className="h-8 w-8 text-bauhaus-ink/30" />
@@ -281,7 +304,7 @@ export default function NearMeBrowse() {
               ) : (
                 <div className={`grid gap-4 ${viewMode === 'list' ? 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3' : 'grid-cols-1'}`}>
                   {filtered.map((provider) => (
-                    <div key={provider.id} onClick={() => setSelectedProvider(provider)} className="cursor-pointer">
+                    <div key={providerKey(provider)} onClick={() => setSelectedProvider(provider)} className="cursor-pointer">
                       <ServiceCard provider={provider} />
                     </div>
                   ))}
@@ -296,7 +319,13 @@ export default function NearMeBrowse() {
                 <ProviderMap providers={filtered} selected={selectedProvider} onSelect={setSelectedProvider} userLocation={userLocation} radiusKm={radiusKm} />
                 {selectedProvider && (
                   <div className="absolute bottom-4 left-4 right-4 z-[500] bg-white border-4 border-bauhaus-ink shadow-bauhaus-lg p-4 flex items-start gap-4">
-                    <img src={selectedProvider.avatar} alt={selectedProvider.name} className="w-14 h-14 object-cover border-2 border-bauhaus-ink shrink-0" />
+                    {selectedProvider.avatar ? (
+                      <img src={selectedProvider.avatar} alt={selectedProvider.name} className="w-14 h-14 object-cover border-2 border-bauhaus-ink shrink-0" />
+                    ) : (
+                      <div className="w-14 h-14 border-2 border-bauhaus-ink bg-bauhaus-yellow shrink-0 flex items-center justify-center font-black text-xs uppercase">
+                        {(selectedProvider.name || 'P').slice(0, 2)}
+                      </div>
+                    )}
                     <div className="flex-1 min-w-0">
                       <div className="font-black text-sm uppercase tracking-tight text-bauhaus-ink">{selectedProvider.name}</div>
                       <div className="font-bold text-xs uppercase tracking-wider text-bauhaus-red">{selectedProvider.service}</div>
@@ -310,7 +339,7 @@ export default function NearMeBrowse() {
                     <div className="flex flex-col gap-2 items-end shrink-0">
                       <span className="font-black text-sm text-bauhaus-ink">₱{selectedProvider.rate}/hr</span>
                       <Link
-                        to={`/provider/${selectedProvider.id}`}
+                        to={`/provider/${providerPathId(selectedProvider)}`}
                         className="px-3 py-1.5 bg-bauhaus-red text-white font-bold text-xs uppercase tracking-wider border-2 border-bauhaus-ink shadow-[2px_2px_0px_0px_black] hover:bg-bauhaus-red/90 transition-all"
                       >
                         View Profile

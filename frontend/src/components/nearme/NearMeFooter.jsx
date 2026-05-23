@@ -46,7 +46,6 @@ export default function NearMeFooter() {
                 { label: 'How It Works', to: '/#how-it-works' },
                 { label: 'Become a Provider', to: '/signup' },
                 { label: 'Login', to: '/login' },
-                { label: 'Admin Portal', to: '/admin' },
               ].map((link) => (
                 <li key={link.label}>
                   <Link to={link.to} className="font-medium text-sm text-white/50 hover:text-bauhaus-yellow transition-colors">{link.label}</Link>

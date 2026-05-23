@@ -1,7 +1,8 @@
 import { MongoClient } from 'mongodb';
 import dotenv from 'dotenv';
+import { fileURLToPath } from 'url';
 
-dotenv.config();
+dotenv.config({ path: fileURLToPath(new URL('./.env', import.meta.url)) });
 
 let client;
 let db;
@@ -13,7 +14,9 @@ export const connectDB = async () => {
     throw new Error('MONGODB_URI is missing from backend/.env');
   }
 
-  client = new MongoClient(process.env.MONGODB_URI);
+  client = new MongoClient(process.env.MONGODB_URI, {
+    serverSelectionTimeoutMS: 10000,
+  });
 
   try {
     await client.connect();
@@ -22,6 +25,7 @@ export const connectDB = async () => {
     return db;
   } catch (error) {
     console.error('MongoDB connection failed:', error);
+    console.error('Check that your MongoDB Atlas cluster allows your current IP address and that port 27017 is not blocked by your network/firewall.');
     process.exit(1);
   }
 };
