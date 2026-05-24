@@ -4,6 +4,7 @@ import { MapContainer, TileLayer, CircleMarker, Circle, Popup, useMap } from 're
 import { Search, MapPin, Star, SlidersHorizontal, X, List, Navigation } from 'lucide-react';
 import NearMeNav from '../components/nearme/NearMeNav';
 import ServiceCard from '../components/nearme/ServiceCard';
+import { ProviderCardSkeletonList } from '../components/nearme/PageSkeletons';
 import { apiRequest } from '../lib/api';
 
 const DEFAULT_LOCATION = { lat: 14.5995, lng: 120.9842 };
@@ -101,7 +102,7 @@ export default function NearMeBrowse() {
   const [showFilters, setShowFilters] = useState(false);
   const [radiusKm, setRadiusKm] = useState(10);
   const [userLocation, setUserLocation] = useState(DEFAULT_LOCATION);
-  const [locationStatus, setLocationStatus] = useState('Using demo location until location access is allowed.');
+  const [locationStatus, setLocationStatus] = useState('Detecting your location...');
   const [providers, setProviders] = useState([]);
   const [services, setServices] = useState([]);
   const [loadingProviders, setLoadingProviders] = useState(true);
@@ -120,7 +121,7 @@ export default function NearMeBrowse() {
 
   useEffect(() => {
     if (!navigator.geolocation) {
-      setLocationStatus('Location is not supported by this browser. Showing demo proximity.');
+      setLocationStatus('Location is not supported by this browser. Showing default Manila proximity.');
       return;
     }
 
@@ -133,7 +134,7 @@ export default function NearMeBrowse() {
         setLocationStatus('Showing providers near your current location.');
       },
       () => {
-        setLocationStatus('Location access was not allowed. Showing demo proximity near Manila.');
+        setLocationStatus('Location access was not allowed. Showing default Manila proximity.');
       },
       { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 }
     );
@@ -290,9 +291,7 @@ export default function NearMeBrowse() {
           {viewMode !== 'map' && (
             <div className={`${viewMode === 'split' ? 'w-full lg:w-[420px] shrink-0' : 'w-full'}`}>
               {loadingProviders ? (
-                <div className="flex flex-col items-center justify-center py-16 text-center">
-                  <div className="font-black text-lg uppercase tracking-tight text-bauhaus-ink">Loading Providers...</div>
-                </div>
+                <ProviderCardSkeletonList count={viewMode === 'list' ? 6 : 4} />
               ) : filtered.length === 0 ? (
                 <div className="flex flex-col items-center justify-center py-16 text-center">
                   <div className="w-16 h-16 bg-bauhaus-canvas border-4 border-bauhaus-ink flex items-center justify-center mb-4">

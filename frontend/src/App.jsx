@@ -13,6 +13,7 @@ import NearMeSettings from '@/pages/NearMeSettings';
 import NearMeProviderKyc from '@/pages/NearMeProviderKyc';
 import NearMeProviderReview from '@/pages/NearMeProviderReview';
 import NearMeProviderDashboard from '@/pages/NearMeProviderDashboard';
+import NearMePayNow from '@/pages/NearMePayNow';
 import NearMeAdminDashboard from '@/pages/NearMeAdminDashboard';
 import RealtimeAlerts from '@/components/nearme/RealtimeAlerts';
 import ProviderAccessGate from '@/components/nearme/ProviderAccessGate';
@@ -36,6 +37,9 @@ function App() {
             <Route path="/provider-kyc" element={<NearMeProviderKyc />} />
             <Route path="/provider-review" element={<NearMeProviderReview />} />
             <Route path="/provider-dashboard" element={<NearMeProviderDashboard />} />
+            <Route path="/provider-dashboard/chat-history" element={<NearMeProviderDashboard focusSection="chat-history" />} />
+            <Route path="/provider-dashboard/settings" element={<NearMeProviderDashboard focusSection="settings" />} />
+            <Route path="/pay/:jobId" element={<NearMePayNow />} />
             <Route path="/admin" element={<NearMeAdminDashboard />} />
             <Route path="*" element={<PageNotFound />} />
           </Routes>

@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
-import { Menu, X, MapPin, Bell, Settings, LogOut, ChevronDown, ShieldCheck, LayoutDashboard } from 'lucide-react';
+import { Menu, X, MapPin, Bell, Settings, LogOut, ShieldCheck, LayoutDashboard } from 'lucide-react';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -17,6 +17,7 @@ import {
   isProviderUnderReview,
 } from '@/lib/providerAccess';
 import { apiRequest } from '@/lib/api';
+import { getSocket } from '@/lib/socket';
 
 const navLinks = [
   { label: 'Find Services', href: '/browse' },
@@ -35,10 +36,14 @@ const getStoredUser = () => {
 export default function NearMeNav({ user: userProp, onLogout }) {
   const [open, setOpen] = useState(false);
   const [storedUser, setStoredUser] = useState(() => userProp || getStoredUser());
+  const [showNotifications, setShowNotifications] = useState(false);
+  const [notifications, setNotifications] = useState([]);
   const location = useLocation();
   const navigate = useNavigate();
   const user = userProp || storedUser;
+  const userId = String(user?.id || user?._id || '').trim();
   const isAdminPage = location.pathname === '/admin';
+  const isProviderOrAdmin = user?.role === 'provider' || user?.role === 'admin';
 
   useEffect(() => {
     let cancelled = false;
@@ -68,6 +73,126 @@ export default function NearMeNav({ user: userProp, onLogout }) {
     };
   }, [location.pathname, userProp]);
 
+  useEffect(() => {
+    if (!userId) {
+      setNotifications([]);
+      return;
+    }
+    try {
+      const key = `nearme_notifications_${userId}`;
+      const stored = JSON.parse(localStorage.getItem(key) || '[]');
+      setNotifications(Array.isArray(stored) ? stored : []);
+    } catch {
+      setNotifications([]);
+    }
+  }, [userId, user?.role]);
+
+  useEffect(() => {
+    if (!userId) return undefined;
+    const socket = getSocket();
+    socket.emit('join:user', userId);
+    socket.emit('join:role', user.role || 'customer');
+
+    const pushNotification = (notification) => {
+      setNotifications((current) => {
+        const next = [notification, ...current].slice(0, 30);
+        const key = `nearme_notifications_${userId}`;
+        localStorage.setItem(key, JSON.stringify(next));
+        return next;
+      });
+    };
+
+    const onPendingPayment = (job) => {
+      if (String(job?.clientUserId || '') !== userId) return;
+      pushNotification({
+        id: `pending-payment-${job?._id}-${Date.now()}`,
+        type: 'pending_payment',
+        title: 'Payment Required',
+        message: `Provider marked job ${job?.jobNumber || ''} as done. Please proceed with payment.`,
+        route: job?._id ? `/pay/${job._id}` : '/messages',
+        createdAt: new Date().toISOString(),
+        read: false,
+      });
+    };
+    const onJobAccepted = (job) => {
+      if (![String(job?.clientUserId || ''), String(job?.providerUserId || '')].includes(userId)) return;
+      pushNotification({
+        id: `job-accepted-${job?._id}-${Date.now()}`,
+        type: 'job_accepted',
+        title: 'Job Accepted',
+        message: `Job ${job?.jobNumber || ''} has been accepted.`,
+        route: '/messages',
+        createdAt: new Date().toISOString(),
+        read: false,
+      });
+    };
+    const onJobStarted = (job) => {
+      if (![String(job?.clientUserId || ''), String(job?.providerUserId || '')].includes(userId)) return;
+      pushNotification({
+        id: `job-started-${job?._id}-${Date.now()}`,
+        type: 'job_started',
+        title: 'Job In Progress',
+        message: `Job ${job?.jobNumber || ''} is now in progress.`,
+        route: '/messages',
+        createdAt: new Date().toISOString(),
+        read: false,
+      });
+    };
+    const onVerificationPending = (payload) => {
+      const isProvider = String(payload?.providerUserId || '') === userId;
+      const isAdmin = String(user.role || '').toLowerCase().includes('admin');
+      if (!isProvider && !isAdmin) return;
+      pushNotification({
+        id: `verify-pending-${payload?.jobId}-${Date.now()}`,
+        type: 'verify_pending',
+        title: 'Payment Verification Needed',
+        message: payload?.message || 'A payment proof needs verification.',
+        route: '/provider-dashboard',
+        createdAt: new Date().toISOString(),
+        read: false,
+      });
+    };
+    const onJobCompleted = (job) => {
+      if (![String(job?.clientUserId || ''), String(job?.providerUserId || '')].includes(userId) && !String(user.role || '').toLowerCase().includes('admin')) return;
+      pushNotification({
+        id: `job-completed-${job?._id}-${Date.now()}`,
+        type: 'job_completed',
+        title: 'Job Completed',
+        message: `Job ${job?.jobNumber || ''} has been completed.`,
+        route: '/messages',
+        createdAt: new Date().toISOString(),
+        read: false,
+      });
+    };
+    const onJobDisputed = (job) => {
+      if (![String(job?.clientUserId || ''), String(job?.providerUserId || '')].includes(userId) && !String(user.role || '').toLowerCase().includes('admin')) return;
+      pushNotification({
+        id: `job-disputed-${job?._id}-${Date.now()}`,
+        type: 'job_disputed',
+        title: 'Job Disputed',
+        message: `A dispute was opened for job ${job?.jobNumber || ''}.`,
+        route: '/messages',
+        createdAt: new Date().toISOString(),
+        read: false,
+      });
+    };
+
+    socket.on('job:pending-payment', onPendingPayment);
+    socket.on('job:accepted', onJobAccepted);
+    socket.on('job:started', onJobStarted);
+    socket.on('job:payment-verification-pending', onVerificationPending);
+    socket.on('job:completed', onJobCompleted);
+    socket.on('job:disputed', onJobDisputed);
+    return () => {
+      socket.off('job:pending-payment', onPendingPayment);
+      socket.off('job:accepted', onJobAccepted);
+      socket.off('job:started', onJobStarted);
+      socket.off('job:payment-verification-pending', onVerificationPending);
+      socket.off('job:completed', onJobCompleted);
+      socket.off('job:disputed', onJobDisputed);
+    };
+  }, [userId, user?.role]);
+
   const logout = () => {
     localStorage.removeItem('nearme_user');
     localStorage.removeItem('nearme_token');
@@ -76,6 +201,22 @@ export default function NearMeNav({ user: userProp, onLogout }) {
     onLogout?.();
     window.dispatchEvent(new Event('nearme:user-updated'));
     navigate('/');
+  };
+
+  const unreadCount = notifications.filter((item) => !item.read).length;
+  const markAllRead = () => {
+    if (!userId) return;
+    const next = notifications.map((item) => ({ ...item, read: true }));
+    localStorage.setItem(`nearme_notifications_${userId}`, JSON.stringify(next));
+    setNotifications(next);
+  };
+  const openNotification = (item) => {
+    if (!userId) return;
+    const next = notifications.map((entry) => (entry.id === item.id ? { ...entry, read: true } : entry));
+    localStorage.setItem(`nearme_notifications_${userId}`, JSON.stringify(next));
+    setNotifications(next);
+    setShowNotifications(false);
+    navigate(item.route || '/messages');
   };
 
   const initials = user?.name
@@ -110,7 +251,7 @@ export default function NearMeNav({ user: userProp, onLogout }) {
             </div>
           </Link>
 
-          {!isAdminPage && (
+          {!isAdminPage && !isProviderOrAdmin && (
           <div className="hidden md:flex items-center gap-1">
             {navLinks.map((link) => (
               <Link
@@ -129,42 +270,70 @@ export default function NearMeNav({ user: userProp, onLogout }) {
           <div className="hidden md:flex items-center gap-3">
             {user ? (
               <>
-                <button className="p-2 border-2 border-bauhaus-ink hover:bg-bauhaus-canvas transition-colors relative">
+                <button onClick={() => setShowNotifications((current) => !current)} className="p-2 border-2 border-bauhaus-ink hover:bg-bauhaus-canvas transition-colors relative">
                   <Bell className="h-4 w-4" />
-                  <span className="absolute -top-1 -right-1 w-4 h-4 bg-bauhaus-red rounded-full text-white text-[9px] font-black flex items-center justify-center">3</span>
+                  {unreadCount > 0 && (
+                    <span className="absolute -top-1 -right-1 min-w-4 h-4 px-1 bg-bauhaus-red rounded-full text-white text-[9px] font-black flex items-center justify-center">{unreadCount}</span>
+                  )}
                 </button>
+                {showNotifications && (
+                  <div className="absolute right-24 top-16 z-[60] w-80 border-2 border-bauhaus-ink bg-white shadow-bauhaus-sm">
+                    <div className="flex items-center justify-between px-3 py-2 border-b-2 border-bauhaus-ink bg-bauhaus-canvas">
+                      <div className="font-black text-[10px] uppercase tracking-wider text-bauhaus-ink">Notifications</div>
+                      <button type="button" onClick={markAllRead} className="font-black text-[9px] uppercase tracking-wider text-bauhaus-blue">Mark all read</button>
+                    </div>
+                    <div className="max-h-72 overflow-y-auto">
+                      {notifications.length === 0 && (
+                        <div className="px-3 py-4 font-bold text-xs text-bauhaus-ink/50">No notifications yet</div>
+                      )}
+                      {notifications.map((item) => (
+                        <button
+                          key={item.id}
+                          type="button"
+                          onClick={() => openNotification(item)}
+                          className={`w-full text-left px-3 py-3 border-b border-bauhaus-ink/20 hover:bg-bauhaus-canvas ${item.read ? 'bg-white' : 'bg-bauhaus-yellow/20'}`}
+                        >
+                          <div className="font-black text-[10px] uppercase tracking-wider text-bauhaus-ink">{item.title}</div>
+                          <div className="mt-1 font-medium text-xs text-bauhaus-ink/70">{item.message}</div>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
-                    <button className="flex items-center gap-2 px-3 py-2 border-2 border-bauhaus-ink hover:bg-bauhaus-canvas transition-colors">
-                      <span className="w-7 h-7 border-2 border-bauhaus-ink bg-bauhaus-yellow flex items-center justify-center overflow-hidden">
+                    <button className="flex items-center justify-center p-1.5 hover:bg-bauhaus-canvas transition-colors rounded-full">
+                      <span className="w-8 h-8 rounded-full bg-bauhaus-yellow flex items-center justify-center overflow-hidden">
                         {user.avatar ? (
                           <img src={user.avatar} alt={user.name || 'Profile'} className="h-full w-full object-cover" />
                         ) : (
                           <span className="font-black text-[10px] text-bauhaus-ink">{initials}</span>
                         )}
                       </span>
-                      <span className="font-bold text-xs uppercase tracking-wider max-w-28 truncate">{user.name || 'Profile'}</span>
-                      <ChevronDown className="h-3.5 w-3.5" />
                     </button>
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align="end" className="w-56 border-2 border-bauhaus-ink bg-white p-1 shadow-bauhaus-sm rounded-none">
-                    <DropdownMenuLabel className="font-black text-xs uppercase tracking-wider text-bauhaus-ink">
-                      {user.name || 'My Account'}
-                    </DropdownMenuLabel>
-                    <DropdownMenuSeparator className="bg-bauhaus-ink/20" />
-                    <DropdownMenuItem asChild className="cursor-pointer rounded-none font-bold text-xs uppercase tracking-wider focus:bg-bauhaus-canvas">
-                      <Link to="/settings" className="flex items-center gap-2">
-                        <Settings className="h-4 w-4" />
-                        Settings
-                      </Link>
-                    </DropdownMenuItem>
-                    {user.role === 'provider' && (
-                      <DropdownMenuItem asChild className="cursor-pointer rounded-none font-bold text-xs uppercase tracking-wider focus:bg-bauhaus-canvas">
-                        <Link to={providerHomePath} className="flex items-center gap-2">
-                          {canAccessProviderDashboard(user) ? <LayoutDashboard className="h-4 w-4" /> : <ShieldCheck className="h-4 w-4" />}
-                          {providerHomeLabel}
-                        </Link>
-                      </DropdownMenuItem>
+                    {!isProviderOrAdmin && (
+                      <>
+                        <DropdownMenuLabel className="font-black text-xs uppercase tracking-wider text-bauhaus-ink">
+                          {user.name || 'My Account'}
+                        </DropdownMenuLabel>
+                        <DropdownMenuSeparator className="bg-bauhaus-ink/20" />
+                        <DropdownMenuItem asChild className="cursor-pointer rounded-none font-bold text-xs uppercase tracking-wider focus:bg-bauhaus-canvas">
+                          <Link to="/settings" className="flex items-center gap-2">
+                            <Settings className="h-4 w-4" />
+                            Settings
+                          </Link>
+                        </DropdownMenuItem>
+                        {user.role === 'provider' && (
+                          <DropdownMenuItem asChild className="cursor-pointer rounded-none font-bold text-xs uppercase tracking-wider focus:bg-bauhaus-canvas">
+                            <Link to={providerHomePath} className="flex items-center gap-2">
+                              {canAccessProviderDashboard(user) ? <LayoutDashboard className="h-4 w-4" /> : <ShieldCheck className="h-4 w-4" />}
+                              {providerHomeLabel}
+                            </Link>
+                          </DropdownMenuItem>
+                        )}
+                      </>
                     )}
                     <DropdownMenuItem onClick={logout} className="cursor-pointer rounded-none font-bold text-xs uppercase tracking-wider text-bauhaus-red focus:bg-bauhaus-canvas focus:text-bauhaus-red">
                       <LogOut className="h-4 w-4" />
@@ -196,7 +365,7 @@ export default function NearMeNav({ user: userProp, onLogout }) {
 
       {open && (
         <div className="md:hidden border-t-4 border-bauhaus-ink bg-white">
-          {!isAdminPage && navLinks.map((link) => (
+          {!isAdminPage && !isProviderOrAdmin && navLinks.map((link) => (
             <Link
               key={link.label}
               to={link.href}
