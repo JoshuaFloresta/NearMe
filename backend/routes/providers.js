@@ -23,6 +23,27 @@ const numericOrDefault = (value, fallback = 0) => {
   const number = Number(value);
   return Number.isFinite(number) ? number : fallback;
 };
+const toWeekdayList = (value) => {
+  const raw = toArray(value).map((item) => String(item).toLowerCase());
+  const allowed = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+  return raw.filter((item) => allowed.includes(item));
+};
+const sanitizeAvailabilityOverrides = (value) => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  const result = {};
+  Object.entries(value).forEach(([dateKey, entry]) => {
+    const isDateKey = /^\d{4}-\d{2}-\d{2}$/.test(String(dateKey));
+    if (!isDateKey || !entry || typeof entry !== 'object') return;
+    const start = String(entry.start || '').trim();
+    const end = String(entry.end || '').trim();
+    result[dateKey] = {
+      available: entry.available !== false,
+      start: start || '08:00',
+      end: end || '18:00',
+    };
+  });
+  return result;
+};
 
 const publicProviderUpdate = (body) => {
   const update = {};
@@ -39,6 +60,15 @@ const publicProviderUpdate = (body) => {
   if (body.certifications !== undefined) update.certifications = toArray(body.certifications);
   if (body.gallery !== undefined) update.gallery = toArray(body.gallery);
   if (body.available !== undefined) update.available = Boolean(body.available);
+  if (body.availabilityDays !== undefined) update.availabilityDays = toWeekdayList(body.availabilityDays);
+  if (body.workingHours !== undefined) {
+    const start = String(body.workingHours?.start || '').trim();
+    const end = String(body.workingHours?.end || '').trim();
+    update.workingHours = (start && end) ? { start, end } : null;
+  }
+  if (body.availabilityOverrides !== undefined) {
+    update.availabilityOverrides = sanitizeAvailabilityOverrides(body.availabilityOverrides);
+  }
   if (body.coordinates !== undefined) {
     update.coordinates = body.coordinates && Number.isFinite(Number(body.coordinates.lat)) && Number.isFinite(Number(body.coordinates.lng))
       ? { lat: Number(body.coordinates.lat), lng: Number(body.coordinates.lng) }
@@ -96,6 +126,8 @@ router.get('/providers/me', requireAuth, async (req, res) => {
         rating: 0,
         reviews: 0,
         jobs: 0,
+        finished_jobs: 0,
+        walletBalance: 0,
         rate: 0,
         distance: 0,
         location: '',
@@ -103,6 +135,10 @@ router.get('/providers/me', requireAuth, async (req, res) => {
         coordinates: null,
         verified: user.providerStatus === 'approved' || Boolean(user.verified),
         available: true,
+        discoverable: true,
+        availabilityDays: ['mon', 'tue', 'wed', 'thu', 'fri', 'sat'],
+        workingHours: { start: '08:00', end: '18:00' },
+        availabilityOverrides: {},
         bio: '',
         tags: [],
         certifications: [],
@@ -127,7 +163,7 @@ router.get('/providers/me', requireAuth, async (req, res) => {
 router.get('/providers', async (req, res) => {
   try {
     const { search, serviceId, available, maxRate, minRating } = req.query;
-    const query = {};
+    const query = { discoverable: { $ne: false } };
 
     if (serviceId) query.serviceId = serviceId;
     if (available === 'true') query.available = true;
@@ -199,9 +235,15 @@ router.post('/providers', requireAuth, async (req, res) => {
       rating: 0,
       reviews: 0,
       jobs: 0,
+      finished_jobs: 0,
+      walletBalance: 0,
       distance: 0,
       verified: false,
       available: true,
+      discoverable: true,
+      availabilityDays: ['mon', 'tue', 'wed', 'thu', 'fri', 'sat'],
+      workingHours: { start: '08:00', end: '18:00' },
+      availabilityOverrides: {},
       createdAt: new Date(),
       updatedAt: new Date(),
     });
@@ -250,8 +292,60 @@ router.get('/providers/:id/reviews', async (req, res) => {
   try {
     const numericId = Number(req.params.id);
     const providerId = Number.isInteger(numericId) ? numericId : req.params.id;
-    const reviews = await getDB().collection('reviews').find({ providerId }).sort({ createdAt: -1 }).toArray();
+    const reviews = await getDB().collection('reviews').find({
+      $or: [
+        { providerId },
+        { providerId: String(providerId) },
+      ],
+    }).sort({ createdAt: -1 }).toArray();
     res.json(reviews);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.post('/providers/:id/reviews', requireAuth, async (req, res) => {
+  try {
+    const query = parseProviderId(req.params.id);
+    if (!query) return res.status(400).json({ error: 'Invalid provider ID' });
+
+    const provider = await getDB().collection('providers').findOne(query);
+    if (!provider) return res.status(404).json({ error: 'Provider not found' });
+
+    const rating = Number(req.body?.rating);
+    const text = String(req.body?.text || '').trim();
+    if (!Number.isInteger(rating) || rating < 1 || rating > 5) {
+      return res.status(400).json({ error: 'Rating must be an integer from 1 to 5' });
+    }
+    if (text.length < 10 || text.length > 500) {
+      return res.status(400).json({ error: 'Review text must be 10 to 500 characters' });
+    }
+
+    const review = {
+      providerId: provider.id ?? String(provider._id),
+      providerUserId: provider.userId ? String(provider.userId) : null,
+      customerUserId: String(req.user._id),
+      name: req.user.name || [req.user.fname, req.user.lname].filter(Boolean).join(' ') || 'Customer',
+      rating,
+      text,
+      status: 'published',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
+    const result = await getDB().collection('reviews').insertOne(review);
+
+    const currentReviews = Number(provider.reviews || 0);
+    const currentRating = Number(provider.rating || 0);
+    const nextReviews = currentReviews + 1;
+    const nextRating = Math.round((((currentRating * currentReviews) + rating) / nextReviews) * 10) / 10;
+
+    await getDB().collection('providers').updateOne(
+      { _id: provider._id },
+      { $set: { reviews: nextReviews, rating: nextRating, updatedAt: new Date() } }
+    );
+
+    res.status(201).json({ ...review, _id: result.insertedId });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

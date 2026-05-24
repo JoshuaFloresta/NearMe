@@ -1,7 +1,7 @@
 import express from 'express';
 import { ObjectId } from 'mongodb';
 import { getDB } from '../mongoConnect.js';
-import { emitAlert } from '../realtime.js';
+import { emitAlertToUsers } from '../realtime.js';
 import { isAdminRole, publicUser, requireAuth } from '../security.js';
 
 const router = express.Router();
@@ -85,7 +85,7 @@ router.post('/conversations', requireAuth, async (req, res) => {
 
     const result = await getDB().collection('conversations').insertOne(conversation);
     const created = { ...conversation, _id: result.insertedId };
-    emitAlert('conversation:created', created);
+    emitAlertToUsers(participantIds, 'conversation:created', created);
     res.status(201).json(created);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -152,6 +152,7 @@ router.post('/conversations/:id/messages', requireAuth, async (req, res) => {
       {
         $set: {
           lastMessage: message.text,
+          lastMessageId: String(result.insertedId),
           lastMessageAt: now,
           updatedAt: now,
           unreadBy,
@@ -160,7 +161,11 @@ router.post('/conversations/:id/messages', requireAuth, async (req, res) => {
     );
 
     const createdMessage = { ...message, _id: result.insertedId };
-    emitAlert('message:new', { ...createdMessage, conversationId: String(conversationId) });
+    emitAlertToUsers(
+      conversation.participantIds || [],
+      'message:new',
+      { ...createdMessage, conversationId: String(conversationId) }
+    );
     res.status(201).json(createdMessage);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -189,7 +194,7 @@ router.patch('/conversations/:id/messages/read', requireAuth, async (req, res) =
     );
 
     const payload = { conversationId: req.params.id, userId, readAt: new Date() };
-    emitAlert('message:read', payload);
+    emitAlertToUsers(conversation.participantIds || [], 'message:read', payload);
     res.json({ success: true, ...payload });
   } catch (error) {
     res.status(500).json({ error: error.message });

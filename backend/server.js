@@ -8,6 +8,7 @@ import authRoutes from './auth.js';
 import adminRoutes from './routes/admin.js';
 import providerRoutes from './routes/providers.js';
 import bookingRoutes from './routes/bookings.js';
+import jobsRoutes from './routes/jobs.js';
 import messageRoutes from './routes/messages.js';
 import kycRoutes from './routes/kyc.js';
 import uploadRoutes from './routes/uploads.js';
@@ -46,6 +47,9 @@ attachRealtime(io);
 io.on('connection', (socket) => {
   socket.on('join:user', (userId) => {
     if (userId) socket.join(`user:${userId}`);
+  });
+  socket.on('join:role', (role) => {
+    if (role) socket.join(`role:${String(role).toLowerCase()}`);
   });
 
   socket.on('join:conversation', (conversationId) => {
@@ -86,6 +90,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api', providerRoutes);
 app.use('/api', bookingRoutes);
+app.use('/api', jobsRoutes);
 app.use('/api', messageRoutes);
 app.use('/api', kycRoutes);
 app.use('/api', uploadRoutes);
@@ -120,7 +125,13 @@ connectDB()
     await seedDatabase(db);
     await normalizeProviderGeoLocations(db);
     await db.collection('providers').createIndex({ geoLocation: '2dsphere' }, { sparse: true });
+    await db.collection('providers').createIndex({ discoverable: 1, rating: -1, jobs: -1 });
     await db.collection('services').createIndex({ id: 1 }, { unique: true });
+    await db.collection('jobs_ledger').createIndex({ status: 1, createdAt: -1 });
+    await db.collection('jobs_ledger').createIndex({ clientUserId: 1, providerUserId: 1, createdAt: -1 });
+    await db.collection('provider_wallet_ledger').createIndex({ providerObjectId: 1, createdAt: -1 });
+    await db.collection('custom_packages').createIndex({ providerId: 1, serviceId: 1, active: 1 });
+    await db.collection('provider_services').createIndex({ providerUserId: 1, active: 1, createdAt: -1 });
     httpServer.listen(PORT, () => console.log(`Server running on http://localhost:${PORT}`));
   })
   .catch((error) => {
