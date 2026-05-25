@@ -28,12 +28,24 @@ const emptyProvider = {
   tags: [],
   certifications: [],
   gallery: [],
+  availabilityDays: ['mon', 'tue', 'wed', 'thu', 'fri', 'sat'],
+  workingHours: { start: '08:00', end: '18:00' },
   joinedYear: '',
 };
 
 const providerKey = (provider) => provider.id || provider._id || 0;
 const normalizeCategory = (value = '') => String(value).toLowerCase().trim();
 const favoritesStorageKey = 'nearme_favorite_providers';
+const weekdayLabels = { sun: 'Sun', mon: 'Mon', tue: 'Tue', wed: 'Wed', thu: 'Thu', fri: 'Fri', sat: 'Sat' };
+const formatHour12 = (timeValue, fallback) => {
+  const [rawHour, rawMinute] = String(timeValue || fallback || '00:00').split(':');
+  const hour = Number(rawHour || 0);
+  const minute = Number(rawMinute || 0);
+  if (!Number.isFinite(hour) || !Number.isFinite(minute)) return fallback || '';
+  const suffix = hour >= 12 ? 'PM' : 'AM';
+  const hour12 = hour % 12 || 12;
+  return `${hour12}:${String(minute).padStart(2, '0')} ${suffix}`;
+};
 
 const formatReviewDate = (review) => {
   const date = new Date(review.createdAt);
@@ -281,6 +293,16 @@ export default function NearMeProvider() {
   const galleryImages = Array.isArray(provider.gallery) ? provider.gallery.filter(Boolean) : [];
   const certifications = Array.isArray(provider.certifications) ? provider.certifications : [];
   const hiringLockedForCurrentUser = currentUser?.role === 'provider' && currentUser?.providerStatus !== 'approved';
+  const hireableHoursLabel = useMemo(() => {
+    const start = String(provider?.workingHours?.start || '08:00');
+    const end = String(provider?.workingHours?.end || '18:00');
+    return `${formatHour12(start, '8:00 AM')} - ${formatHour12(end, '6:00 PM')}`;
+  }, [provider?.workingHours?.start, provider?.workingHours?.end]);
+  const hireableDaysLabel = useMemo(() => {
+    const days = Array.isArray(provider?.availabilityDays) ? provider.availabilityDays : [];
+    const labels = days.map((day) => weekdayLabels[String(day || '').toLowerCase()] || '').filter(Boolean);
+    return labels.length > 0 ? labels.join(', ') : 'Mon, Tue, Wed, Thu, Fri, Sat';
+  }, [provider?.availabilityDays]);
 
   return (
     <div className="min-h-screen bg-bauhaus-canvas font-outfit">
@@ -370,8 +392,8 @@ export default function NearMeProvider() {
                     {(provider.tags || []).length === 0 && <span className="font-medium text-sm text-bauhaus-ink/50">No service tags yet.</span>}
                   </div>
                 </div>
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                  {[{ icon: MapPin, label: 'Service Area', value: provider.serviceArea || provider.location || 'Not set' }, { icon: Clock, label: 'Availability', value: provider.available ? 'Available Now' : 'Currently Busy' }, { icon: Award, label: 'Certifications', value: certifications.length ? certifications.join(', ') : 'Not listed' }].map(({ icon: Icon, label, value }) => (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  {[{ icon: MapPin, label: 'Service Area', value: provider.serviceArea || provider.location || 'Not set' }, { icon: Clock, label: 'Hireable Hours', value: hireableHoursLabel }, { icon: Calendar, label: 'Hireable Days', value: hireableDaysLabel }, { icon: Award, label: 'Certifications', value: certifications.length ? certifications.join(', ') : 'Not listed' }].map(({ icon: Icon, label, value }) => (
                     <div key={label} className="bg-bauhaus-canvas border-2 border-bauhaus-ink p-4 flex items-start gap-3">
                       <div className="w-8 h-8 bg-bauhaus-red border-2 border-bauhaus-ink flex items-center justify-center shrink-0"><Icon className="h-4 w-4 text-white" /></div>
                       <div>
@@ -453,6 +475,10 @@ export default function NearMeProvider() {
               <div className={`mt-4 flex items-center gap-2 px-3 py-2 border-2 border-bauhaus-ink ${provider.available ? 'bg-bauhaus-yellow' : 'bg-bauhaus-canvas'}`}>
                 <div className={`w-2 h-2 rounded-full ${provider.available ? 'bg-bauhaus-ink' : 'bg-bauhaus-ink/30'}`} />
                 <span className="font-bold text-xs uppercase tracking-wider text-bauhaus-ink">{provider.available ? 'Available Now' : 'Currently Busy'}</span>
+              </div>
+              <div className="mt-2 border-2 border-bauhaus-ink bg-bauhaus-canvas px-3 py-2">
+                <div className="font-black text-[10px] uppercase tracking-widest text-bauhaus-ink/50">Hireable Time Frame</div>
+                <div className="font-black text-xs text-bauhaus-ink mt-0.5">{hireableHoursLabel}</div>
               </div>
 
               <div className="space-y-3 mt-5">

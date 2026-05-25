@@ -13,6 +13,16 @@ const providerKey = (provider) => provider?.id || provider?._id || provider?.ema
 
 const providerPathId = (provider) => provider.id || provider._id;
 const providerVisibleRate = (provider) => Number(provider?.startingRate ?? provider?.rate ?? 0);
+const formatHour12 = (timeValue, fallback) => {
+  const [rawHour, rawMinute] = String(timeValue || fallback || '00:00').split(':');
+  const hour = Number(rawHour || 0);
+  const minute = Number(rawMinute || 0);
+  if (!Number.isFinite(hour) || !Number.isFinite(minute)) return fallback || '';
+  const suffix = hour >= 12 ? 'PM' : 'AM';
+  const hour12 = hour % 12 || 12;
+  return `${hour12}:${String(minute).padStart(2, '0')} ${suffix}`;
+};
+const providerVisibleHours = (provider) => `${formatHour12(provider?.workingHours?.start, '8:00 AM')} - ${formatHour12(provider?.workingHours?.end, '6:00 PM')}`;
 
 const hasCoordinates = (provider) => (
   Number.isFinite(Number(provider?.coordinates?.lat)) && Number.isFinite(Number(provider?.coordinates?.lng))
@@ -425,6 +435,7 @@ export default function NearMeBrowse() {
                         <span className="text-bauhaus-ink/40 text-xs">· {selectedProvider.reviews} reviews</span>
                       </div>
                       <div className="mt-1 font-medium text-xs text-bauhaus-ink/50">{selectedProvider.distance} km from you</div>
+                      <div className="mt-1 font-bold text-[10px] uppercase tracking-wider text-bauhaus-ink/60">Hireable: {providerVisibleHours(selectedProvider)}</div>
                     </div>
                     <div className="flex flex-col gap-2 items-end shrink-0">
                       <span className="font-black text-sm text-bauhaus-ink">PHP {providerVisibleRate(selectedProvider).toLocaleString('en-PH')} start</span>

@@ -100,7 +100,6 @@ const parseInquiryResponseCard = (text = '') => {
     return null;
   }
 };
-const isOtherInquiry = (payload) => String(payload?.serviceCategory || '').toLowerCase() === 'other';
 const isFixedOrBundleSelection = (payload) => {
   const type = String(payload?.serviceSelection?.type || '').toLowerCase();
   return type === 'fixed' || type === 'bundle';
@@ -1669,7 +1668,7 @@ export default function NearMeProviderDashboard({ focusSection = null }) {
                             onClick={(e) => {
                               e.preventDefault();
                               e.stopPropagation();
-                              if (isOtherInquiry(inquiry) && !isFixedOrBundleSelection(inquiry)) {
+                              if (!isFixedOrBundleSelection(inquiry)) {
                                 openInquiryQuote(conversation, inquiry);
                                 return;
                               }

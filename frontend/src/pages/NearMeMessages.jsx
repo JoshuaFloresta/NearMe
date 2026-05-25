@@ -12,6 +12,10 @@ function StatusBadge({ status }) {
   const map = {
     'Active Job': 'bg-bauhaus-yellow text-bauhaus-ink',
     Inquiry: 'bg-bauhaus-blue text-white',
+    Accepted: 'bg-bauhaus-yellow text-bauhaus-ink',
+    'In Progress': 'bg-bauhaus-blue text-white',
+    'Pending Payment': 'bg-bauhaus-red text-white',
+    'Pending Verification': 'bg-bauhaus-red text-white',
     Completed: 'bg-bauhaus-ink text-white',
   };
   return (
@@ -34,6 +38,19 @@ const conversationPreviewText = (text = '') => {
   if (value.startsWith('WORK_PROOF_RECEIPT::')) return 'Work completion receipt';
   if (value.startsWith('WORK_PROOF::')) return 'Work completion proof';
   return value;
+};
+const toTimeValue = (value) => {
+  const parsed = new Date(value || 0).getTime();
+  return Number.isFinite(parsed) ? parsed : 0;
+};
+const normalizeJobStatus = (status = '') => {
+  const value = String(status || '').trim().toLowerCase();
+  if (value === 'accepted') return 'Accepted';
+  if (value === 'in progress') return 'In Progress';
+  if (value === 'pending payment') return 'Pending Payment';
+  if (value === 'pending verification') return 'Pending Verification';
+  if (value === 'completed') return 'Completed';
+  return '';
 };
 
 const parseInquiryCard = (text = '') => {
@@ -153,7 +170,6 @@ export default function NearMeMessages() {
   const imageInputRef = useRef(null);
   const pendingImagesRef = useRef([]);
   const lastSendRef = useRef({ text: '', at: 0, convoId: '' });
-  const isOtherInquiry = (payload) => String(payload?.serviceCategory || '').toLowerCase() === 'other';
   const isFixedOrBundleSelection = (payload) => {
     const type = String(payload?.serviceSelection?.type || '').toLowerCase();
     return type === 'fixed' || type === 'bundle';
@@ -276,12 +292,39 @@ export default function NearMeMessages() {
   };
   const activeJob = useMemo(() => {
     if (!activeConvo) return null;
-    return jobs.find((job) => (
-      String(job.providerUserId || '') === String(activeConvo.providerUserId || '')
-      && String(job.clientUserId || '') === String(activeConvo.customerUserId || '')
-      && ['Accepted', 'In Progress', 'Pending Payment', 'Pending Verification', 'Completed'].includes(job.status)
-    )) || null;
+    const matching = jobs
+      .filter((job) => (
+        (
+          activeConvo._id
+          && String(job.conversationId || '') === String(activeConvo._id)
+        )
+        || (
+          String(job.providerUserId || '') === String(activeConvo.providerUserId || '')
+          && String(job.clientUserId || '') === String(activeConvo.customerUserId || '')
+        )
+      ))
+      .filter((job) => ['Accepted', 'In Progress', 'Pending Payment', 'Pending Verification', 'Completed'].includes(job.status))
+      .sort((a, b) => toTimeValue(b.updatedAt || b.createdAt) - toTimeValue(a.updatedAt || a.createdAt));
+    return matching[0] || null;
   }, [jobs, activeConvo]);
+  const getConversationDisplayStatus = (conversation) => {
+    if (!conversation) return 'Inquiry';
+    const matching = jobs
+      .filter((job) => (
+        (
+          conversation._id
+          && String(job.conversationId || '') === String(conversation._id)
+        )
+        || (
+          String(job.providerUserId || '') === String(conversation.providerUserId || '')
+          && String(job.clientUserId || '') === String(conversation.customerUserId || '')
+        )
+      ))
+      .sort((a, b) => toTimeValue(b.updatedAt || b.createdAt) - toTimeValue(a.updatedAt || a.createdAt));
+    const normalized = normalizeJobStatus(matching[0]?.status || '');
+    return normalized || conversation.status || 'Inquiry';
+  };
+  const activeConversationStatus = getConversationDisplayStatus(activeConvo);
 
   if (!currentUser || !authToken) return <Navigate to="/login" replace />;
 
@@ -591,6 +634,7 @@ export default function NearMeMessages() {
               const peer = peerFor(conversation, currentUser);
               const isActive = activeConvo?._id === conversation._id;
               const unread = (conversation.unreadBy || []).includes(currentUser.id);
+              const conversationStatus = getConversationDisplayStatus(conversation);
 
               return (
                 <button
@@ -606,7 +650,7 @@ export default function NearMeMessages() {
                       <div className="font-black text-xs uppercase tracking-tight text-bauhaus-ink truncate">{peer.name}</div>
                       <div className="font-medium text-[9px] text-bauhaus-ink/40 shrink-0">{formatTime(conversation.lastMessageAt || conversation.updatedAt)}</div>
                     </div>
-                    <StatusBadge status={conversation.status} />
+                    <StatusBadge status={conversationStatus} />
                     <div className="font-medium text-xs text-bauhaus-ink/50 mt-1 truncate">{conversationPreviewText(conversation.lastMessage)}</div>
                   </div>
                   {unread && <div className="w-3 h-3 bg-bauhaus-red rounded-full shrink-0 mt-1" />}
@@ -622,29 +666,41 @@ export default function NearMeMessages() {
                   <button onClick={() => setMobileView('list')} className="sm:hidden p-1 hover:text-bauhaus-red transition-colors">
                     <ArrowLeft className="h-5 w-5" />
                   </button>
-                  <div className="w-9 h-9 border-2 border-bauhaus-ink bg-bauhaus-yellow flex items-center justify-center overflow-hidden shrink-0 font-black text-xs uppercase">
-                    {activePeer.avatar ? <img src={activePeer.avatar} alt={activePeer.name} className="h-full w-full object-cover" /> : (activePeer.name || 'U').slice(0, 2)}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="font-black text-sm uppercase tracking-tight text-bauhaus-ink truncate">{activePeer.name}</div>
-                    <div className="flex items-center gap-1.5">
-                      <span className="font-medium text-[10px] text-bauhaus-ink/50">{activePeer.service || activePeer.email || 'Conversation'}</span>
-                      <StatusBadge status={activeConvo.status} />
-                    </div>
-                  </div>
+                  {activeConvo.provider?.id ? (
+                    <Link to={`/provider/${activeConvo.provider.id}`} className="flex items-center gap-3 min-w-0 flex-1 hover:opacity-90">
+                      <div className="w-9 h-9 border-2 border-bauhaus-ink bg-bauhaus-yellow flex items-center justify-center overflow-hidden shrink-0 font-black text-xs uppercase">
+                        {activePeer.avatar ? <img src={activePeer.avatar} alt={activePeer.name} className="h-full w-full object-cover" /> : (activePeer.name || 'U').slice(0, 2)}
+                      </div>
+                      <div className="min-w-0">
+                        <div className="font-black text-sm uppercase tracking-tight text-bauhaus-ink truncate">{activePeer.name}</div>
+                        <div className="flex items-center gap-1.5">
+                          <span className="font-medium text-[10px] text-bauhaus-ink/50">{activePeer.service || activePeer.email || 'Conversation'}</span>
+                          <StatusBadge status={activeConversationStatus} />
+                        </div>
+                      </div>
+                    </Link>
+                  ) : (
+                    <>
+                      <div className="w-9 h-9 border-2 border-bauhaus-ink bg-bauhaus-yellow flex items-center justify-center overflow-hidden shrink-0 font-black text-xs uppercase">
+                        {activePeer.avatar ? <img src={activePeer.avatar} alt={activePeer.name} className="h-full w-full object-cover" /> : (activePeer.name || 'U').slice(0, 2)}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="font-black text-sm uppercase tracking-tight text-bauhaus-ink truncate">{activePeer.name}</div>
+                        <div className="flex items-center gap-1.5">
+                          <span className="font-medium text-[10px] text-bauhaus-ink/50">{activePeer.service || activePeer.email || 'Conversation'}</span>
+                          <StatusBadge status={activeConversationStatus} />
+                        </div>
+                      </div>
+                    </>
+                  )}
                   <div className="flex items-center gap-2">
-                    {activeConvo.provider?.id && (
-                      <Link to={`/provider/${activeConvo.provider.id}`} className="px-3 py-1.5 bg-bauhaus-red text-white font-bold text-[9px] uppercase tracking-wider border-2 border-bauhaus-ink hover:bg-bauhaus-red/90 transition-colors">
-                        Profile
-                      </Link>
-                    )}
                     <button className="p-1.5 border-2 border-bauhaus-ink/20 hover:border-bauhaus-ink transition-colors">
                       <MoreVertical className="h-4 w-4 text-bauhaus-ink/50" />
                     </button>
                   </div>
                 </div>
 
-                {activeConvo.status === 'Active Job' && (
+                {Boolean(activeJob) && (
                   <div className="flex items-center gap-2 px-4 py-2 bg-bauhaus-yellow border-b-2 border-bauhaus-ink">
                     <AlertCircle className="h-3.5 w-3.5 text-bauhaus-ink shrink-0" />
                     <span className="font-bold text-[10px] uppercase tracking-wider text-bauhaus-ink">Active booking conversation</span>
@@ -688,6 +744,14 @@ export default function NearMeMessages() {
                       && String(currentUser?.role || '').toLowerCase() === 'provider'
                       && !alreadyResponded
                     );
+                    const responseLinkedJob = responsePayload
+                      ? jobs
+                        .filter((job) => String(job.conversationId || '') === String(activeConvo?._id || ''))
+                        .find((job) => (
+                          String(job.inquiryMessageId || '') === String(responsePayload.inquiryMessageId || '')
+                        ))
+                      : null;
+                    const isClientViewer = String(currentUser?.role || '').toLowerCase() !== 'provider';
                     return (
                       <div key={msg._id || msg.createdAt} className={`flex ${isUser ? 'justify-end' : 'justify-start'} items-start gap-2`}>
                         {!isUser && (
@@ -714,7 +778,7 @@ export default function NearMeMessages() {
                                     type="button"
                                     disabled={actionBusyId === String(msg._id)}
                                     onClick={() => {
-                                      if (isOtherInquiry(inquiryPayload) && !isFixedOrBundleSelection(inquiryPayload)) {
+                                      if (!isFixedOrBundleSelection(inquiryPayload)) {
                                         openAcceptModal(msg._id, inquiryPayload);
                                         return;
                                       }
@@ -751,6 +815,19 @@ export default function NearMeMessages() {
                                       <span className="font-black text-bauhaus-ink">Inclusions:</span> {responsePayload.inclusions.join(', ')}
                                     </div>
                                   )}
+                                </div>
+                              )}
+                              {isClientViewer && (
+                                (String(responseLinkedJob?.status || activeJob?.status || '').toLowerCase() === 'pending payment')
+                                && (responseLinkedJob?._id || activeJob?._id)
+                              ) && (
+                                <div className="mt-3">
+                                  <Link
+                                    to={`/pay/${responseLinkedJob?._id || activeJob?._id}`}
+                                    className="inline-flex items-center px-3 py-1.5 bg-bauhaus-red text-white border-2 border-bauhaus-ink font-black text-[10px] uppercase tracking-wider"
+                                  >
+                                    Pay Now
+                                  </Link>
                                 </div>
                               )}
                             </div>

@@ -5,12 +5,22 @@ import { Star, MapPin, CheckCircle, Clock } from 'lucide-react';
 const cornerColors = ['bg-bauhaus-red', 'bg-bauhaus-blue', 'bg-bauhaus-yellow'];
 
 const providerPathId = (provider) => provider.id || provider._id;
+const formatHour12 = (timeValue, fallback) => {
+  const [rawHour, rawMinute] = String(timeValue || fallback || '00:00').split(':');
+  const hour = Number(rawHour || 0);
+  const minute = Number(rawMinute || 0);
+  if (!Number.isFinite(hour) || !Number.isFinite(minute)) return fallback || '';
+  const suffix = hour >= 12 ? 'PM' : 'AM';
+  const hour12 = hour % 12 || 12;
+  return `${hour12}:${String(minute).padStart(2, '0')} ${suffix}`;
+};
 
 export default function ServiceCard({ provider, compact = false }) {
   const color = cornerColors[Number(provider.id || 0) % 3];
   const name = provider.name || 'Provider';
   const distanceLabel = Number.isFinite(Number(provider.distance)) ? `${provider.distance} km` : 'Nearby';
   const visibleRate = Number(provider.startingRate ?? provider.rate ?? 0);
+  const hireableLabel = `${formatHour12(provider?.workingHours?.start, '8:00 AM')} - ${formatHour12(provider?.workingHours?.end, '6:00 PM')}`;
 
   return (
     <Link
@@ -65,6 +75,9 @@ export default function ServiceCard({ provider, compact = false }) {
           {(provider.tags || []).map((tag) => (
             <span key={tag} className="px-2 py-0.5 bg-bauhaus-canvas border border-bauhaus-ink/20 font-medium text-[10px] uppercase tracking-wider text-bauhaus-ink/60">{tag}</span>
           ))}
+        </div>
+        <div className="mt-2 font-bold text-[10px] uppercase tracking-wider text-bauhaus-ink/60">
+          Hireable: {hireableLabel}
         </div>
       </div>
     </Link>
