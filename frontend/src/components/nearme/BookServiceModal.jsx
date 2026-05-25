@@ -125,7 +125,7 @@ export default function BookServiceModal({
 
     setSubmitting(true);
     try {
-      await onSubmit({
+      const submitted = await onSubmit({
         serviceCategory: form.category,
         bookingDate: form.bookingDate,
         bookingTime: form.bookingTime,
@@ -134,6 +134,7 @@ export default function BookServiceModal({
         serviceSelection: selectedService,
         dynamicFields,
       });
+      if (submitted === false) return;
       onClose();
       setStep('select');
     } finally {

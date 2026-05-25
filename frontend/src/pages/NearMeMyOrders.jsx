@@ -32,7 +32,7 @@ const parseScheduledAt = (job) => {
 
 const filterByTab = (job, tab) => {
   const status = String(job?.status || '').toLowerCase();
-  const hasReview = Boolean(job?.review?.submittedAt || job?.reviewId);
+  const hasReview = Boolean(job?.review?.submittedAt || job?.reviewId || job?.reviewedAt);
   if (tab === 'all') return true;
   if (tab === 'on_progress') return ['accepted', 'in progress', 'pending verification'].includes(status);
   if (tab === 'to_pay') return status === 'pending payment';

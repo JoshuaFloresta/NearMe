@@ -37,6 +37,20 @@ const parseProviderId = (id) => {
   // If neither numeric nor ObjectId-like, return null to indicate invalid input.
   return null;
 };
+const bookedStates = ['Accepted', 'In Progress', 'Pending Payment', 'Pending Verification'];
+const weekdayKeys = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+const parseHHMMToMinutes = (value, fallback) => {
+  const [hour, minute] = String(value || fallback || '00:00').split(':').map((item) => Number(item || 0));
+  return (hour * 60) + minute;
+};
+const parseInquiryCard = (text = '') => {
+  if (!String(text).startsWith('INQUIRY_CARD::')) return null;
+  try {
+    return JSON.parse(String(text).replace('INQUIRY_CARD::', ''));
+  } catch {
+    return null;
+  }
+};
 
 // Utility: canAccessConversation checks whether `user` is allowed to access the `conversation`.
 // Access is granted if the user is an admin or if their user id is one of the conversation participants.
@@ -84,7 +98,11 @@ router.post('/conversations', requireAuth, async (req, res) => {
     if (!providerQuery) return res.status(400).json({ error: 'Invalid provider ID' });
 
     // Look up the provider document by numeric id or ObjectId depending on input.
-    const provider = await getDB().collection('providers').findOne(providerQuery);
+    const provider = await getDB().collection('providers').findOne({
+      ...providerQuery,
+      isDeleted: { $ne: true },
+      archivedAt: { $exists: false },
+    });
     if (!provider) return res.status(404).json({ error: 'Provider not found' });
 
     // Prepare canonical participant IDs (strings) for the conversation.
@@ -200,6 +218,50 @@ router.post('/conversations/:id/messages', requireAuth, async (req, res) => {
     const conversation = await getDB().collection('conversations').findOne({ _id: conversationId });
     if (!conversation) return res.status(404).json({ error: 'Conversation not found' });
     if (!canAccessConversation(req.user, conversation)) return res.status(403).json({ error: 'Conversation access denied' });
+
+    const inquiry = parseInquiryCard(text);
+    const isCustomerInquiry = inquiry && String(conversation.customerUserId || '') === String(req.user._id);
+    if (isCustomerInquiry) {
+      const providerQuery = parseProviderId(conversation.providerId ?? conversation.providerObjectId ?? conversation.providerKey);
+      const provider = providerQuery ? await getDB().collection('providers').findOne({
+        ...providerQuery,
+        isDeleted: { $ne: true },
+        archivedAt: { $exists: false },
+      }) : null;
+      if (!provider) return res.status(404).json({ error: 'Provider not found' });
+
+      const bookingDate = String(inquiry.bookingDate || '').trim();
+      const bookingTime = String(inquiry.bookingTime || '').trim();
+      const scheduledAt = new Date(`${bookingDate}T${bookingTime}:00`);
+      if (!bookingDate || !bookingTime || Number.isNaN(scheduledAt.getTime())) {
+        return res.status(400).json({ error: 'Please select a valid booking date and time.' });
+      }
+
+      const dayOverride = provider.availabilityOverrides?.[bookingDate] || null;
+      const availableDays = Array.isArray(provider.availabilityDays) && provider.availabilityDays.length > 0
+        ? provider.availabilityDays
+        : ['mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+      const availableByDay = dayOverride ? dayOverride.available !== false : availableDays.includes(weekdayKeys[scheduledAt.getDay()]);
+      if (!availableByDay) {
+        return res.status(409).json({ error: 'This provider is off on your selected date. Please choose an available day.' });
+      }
+
+      const startTime = dayOverride?.start || provider.workingHours?.start || '08:00';
+      const endTime = dayOverride?.end || provider.workingHours?.end || '18:00';
+      const minutes = (scheduledAt.getHours() * 60) + scheduledAt.getMinutes();
+      if (minutes < parseHHMMToMinutes(startTime, '08:00') || minutes > parseHHMMToMinutes(endTime, '18:00')) {
+        return res.status(409).json({ error: `Please choose a time within the provider's working hours (${startTime}-${endTime}).` });
+      }
+
+      const conflictingJob = await getDB().collection('jobs_ledger').findOne({
+        providerUserId: String(provider.userId || ''),
+        status: { $in: bookedStates },
+        scheduledAt,
+      });
+      if (conflictingJob) {
+        return res.status(409).json({ error: 'This provider is already booked at the selected time. Please choose another time.' });
+      }
+    }
 
     // Build a sanitized sender object for storing with the message (publicUser removes secrets).
     const sender = publicUser(req.user);

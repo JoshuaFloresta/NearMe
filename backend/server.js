@@ -126,10 +126,18 @@ connectDB()
     await normalizeProviderGeoLocations(db);
     await db.collection('providers').createIndex({ geoLocation: '2dsphere' }, { sparse: true });
     await db.collection('providers').createIndex({ discoverable: 1, rating: -1, jobs: -1 });
+    await db.collection('providers').createIndex({ isDeleted: 1, archivedAt: -1 });
     await db.collection('services').createIndex({ id: 1 }, { unique: true });
+    await db.collection('services').createIndex({ isArchived: 1, archivedAt: -1 });
+    await db.collection('users').createIndex({ isDeleted: 1, archivedAt: -1 });
+    await db.collection('password_reset_tokens').createIndex({ email: 1, consumed: 1, expiresAt: -1 });
+    await db.collection('password_reset_tokens').createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+    await db.collection('otp_verifications').createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 });
     await db.collection('jobs_ledger').createIndex({ status: 1, createdAt: -1 });
     await db.collection('jobs_ledger').createIndex({ clientUserId: 1, providerUserId: 1, createdAt: -1 });
     await db.collection('provider_wallet_ledger').createIndex({ providerObjectId: 1, createdAt: -1 });
+    await db.collection('provider_payout_requests').createIndex({ providerUserId: 1, status: 1, createdAt: -1 });
+    await db.collection('reports').createIndex({ providerObjectId: 1, status: 1, createdAt: -1 });
     await db.collection('custom_packages').createIndex({ providerId: 1, serviceId: 1, active: 1 });
     await db.collection('provider_services').createIndex({ providerUserId: 1, active: 1, createdAt: -1 });
     httpServer.listen(PORT, () => console.log(`Server running on http://localhost:${PORT}`));

@@ -12,6 +12,7 @@ import {
 const unrestrictedPaths = new Set([
   '/login',
   '/signup',
+  '/forgot-password',
   '/provider-kyc',
   '/provider-review',
 ]);

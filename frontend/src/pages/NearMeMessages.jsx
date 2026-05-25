@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, Navigate, useNavigate, useSearchParams } from 'react-router-dom';
 import { AlertCircle, ArrowLeft, CheckCheck, ImagePlus, MessageSquareText, MoreVertical, Send, X } from 'lucide-react';
-import { toast } from 'sonner';
+import { toast, Toaster } from 'sonner';
 import NearMeNav from '../components/nearme/NearMeNav';
 import { ConversationListSkeleton, SkeletonBlock } from '../components/nearme/PageSkeletons';
 import { apiRequest, getStoredToken, uploadImage } from '../lib/api';
@@ -160,7 +160,14 @@ export default function NearMeMessages() {
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(true);
   const [mobileView, setMobileView] = useState('list');
-  const [quoteModal, setQuoteModal] = useState({ open: false, messageId: '', inquiry: null });
+  const [quoteModal, setQuoteModal] = useState({
+    open: false,
+    messageId: '',
+    inquiry: null,
+    conversationId: '',
+    clientUserId: '',
+    providerId: '',
+  });
   const [quoteForm, setQuoteForm] = useState({ price: '', inclusions: '', breakdown: '', description: '' });
   const [quoteBusy, setQuoteBusy] = useState(false);
   const [actionBusyId, setActionBusyId] = useState('');
@@ -325,6 +332,10 @@ export default function NearMeMessages() {
     return normalized || conversation.status || 'Inquiry';
   };
   const activeConversationStatus = getConversationDisplayStatus(activeConvo);
+  const isClientViewer = Boolean(activeConvo && [
+    activeConvo.customerUserId,
+    activeConvo.customer?.id,
+  ].some((id) => String(id || '') === String(currentUser?.id || currentUser?._id || '')));
 
   if (!currentUser || !authToken) return <Navigate to="/login" replace />;
 
@@ -425,7 +436,14 @@ export default function NearMeMessages() {
 
   const openAcceptModal = (messageId, inquiryPayload) => {
     setQuoteForm({ price: '', inclusions: '', breakdown: '', description: '' });
-    setQuoteModal({ open: true, messageId: String(messageId), inquiry: inquiryPayload || null });
+    setQuoteModal({
+      open: true,
+      messageId: String(messageId),
+      inquiry: inquiryPayload || null,
+      conversationId: String(activeConvo?._id || ''),
+      clientUserId: String(activeConvo?.customerUserId || activeConvo?.customer?.id || ''),
+      providerId: String(activeConvo?.provider?.id || activeConvo?.providerId || activeConvo?.providerObjectId || activeConvo?.providerKey || ''),
+    });
   };
 
   const acceptInquiryDirect = async (messageId, inquiryPayload) => {
@@ -505,7 +523,11 @@ export default function NearMeMessages() {
   };
 
   const submitAcceptedInquiry = async () => {
-    if (!activeConvo?._id || !quoteModal.inquiry || !quoteModal.messageId) return;
+    const conversationId = String(activeConvo?._id || quoteModal.conversationId || '').trim();
+    if (!conversationId || !quoteModal.inquiry || !quoteModal.messageId) {
+      toast.error('Conversation context is missing. Please reopen the inquiry and try again.');
+      return;
+    }
     const price = Number(quoteForm.price);
     if (!Number.isFinite(price) || price <= 0) {
       toast.error('Please enter a valid price.');
@@ -520,15 +542,15 @@ export default function NearMeMessages() {
     try {
       const inquiry = quoteModal.inquiry;
       const payload = {
-        clientUserId: activeConvo.customerUserId || activeConvo.customer?.id,
-        providerId: activeConvo.provider?.id || activeConvo.providerId || activeConvo.providerObjectId || activeConvo.providerKey,
+        clientUserId: String(activeConvo?.customerUserId || activeConvo?.customer?.id || quoteModal.clientUserId || '').trim(),
+        providerId: String(activeConvo?.provider?.id || activeConvo?.providerId || activeConvo?.providerObjectId || activeConvo?.providerKey || quoteModal.providerId || '').trim(),
         serviceCategory: inquiry.serviceCategory || 'other',
         bookingDate: inquiry.bookingDate,
         bookingTime: inquiry.bookingTime,
         address: inquiry.address,
         notes: inquiry.notes || '',
         inquiryMessageId: String(quoteModal.messageId),
-        conversationId: activeConvo._id,
+        conversationId,
         inquiryPayload: inquiry,
         quotedPrice: price,
         quoteBreakdown: quoteForm.breakdown.trim(),
@@ -571,13 +593,20 @@ export default function NearMeMessages() {
         breakdown: quoteForm.breakdown.trim(),
         description: quoteForm.description.trim(),
       })}`;
-      const created = await apiRequest(`/api/conversations/${activeConvo._id}/messages`, {
+      const created = await apiRequest(`/api/conversations/${conversationId}/messages`, {
         method: 'POST',
         body: JSON.stringify({ text }),
       });
       setMessages((current) => [...current, created]);
-      setQuoteModal({ open: false, messageId: '', inquiry: null });
-      loadConversations(activeConvo._id);
+      setQuoteModal({
+        open: false,
+        messageId: '',
+        inquiry: null,
+        conversationId: '',
+        clientUserId: '',
+        providerId: '',
+      });
+      loadConversations(conversationId);
       toast.success(jobAccepted ? 'Inquiry accepted and quote sent' : 'Quote sent');
     } catch (error) {
       const message = String(error.message || '');
@@ -704,12 +733,12 @@ export default function NearMeMessages() {
                   <div className="flex items-center gap-2 px-4 py-2 bg-bauhaus-yellow border-b-2 border-bauhaus-ink">
                     <AlertCircle className="h-3.5 w-3.5 text-bauhaus-ink shrink-0" />
                     <span className="font-bold text-[10px] uppercase tracking-wider text-bauhaus-ink">Active booking conversation</span>
-                    {activeJob?.status === 'Pending Payment' && (
+                    {isClientViewer && activeJob?.status === 'Pending Payment' && (
                       <Link to={`/pay/${activeJob._id}`} className="ml-auto px-3 py-1 bg-bauhaus-red text-white border-2 border-bauhaus-ink font-black text-[9px] uppercase tracking-wider">
                         Pay Now
                       </Link>
                     )}
-                    {activeJob?.status === 'Completed' && (
+                    {isClientViewer && activeJob?.status === 'Completed' && (
                       <Link to={`/pay/${activeJob._id}`} className="ml-auto px-3 py-1 bg-bauhaus-blue text-white border-2 border-bauhaus-ink font-black text-[9px] uppercase tracking-wider">
                         Leave Review
                       </Link>
@@ -751,7 +780,6 @@ export default function NearMeMessages() {
                           String(job.inquiryMessageId || '') === String(responsePayload.inquiryMessageId || '')
                         ))
                       : null;
-                    const isClientViewer = String(currentUser?.role || '').toLowerCase() !== 'provider';
                     return (
                       <div key={msg._id || msg.createdAt} className={`flex ${isUser ? 'justify-end' : 'justify-start'} items-start gap-2`}>
                         {!isUser && (
@@ -1005,7 +1033,14 @@ export default function NearMeMessages() {
             <div className="mt-4 flex gap-2">
               <button
                 type="button"
-                onClick={() => setQuoteModal({ open: false, messageId: '', inquiry: null })}
+                onClick={() => setQuoteModal({
+                  open: false,
+                  messageId: '',
+                  inquiry: null,
+                  conversationId: '',
+                  clientUserId: '',
+                  providerId: '',
+                })}
                 className="flex-1 px-3 py-2 bg-white border-2 border-bauhaus-ink font-black text-[10px] uppercase tracking-wider"
               >
                 Cancel
@@ -1022,6 +1057,7 @@ export default function NearMeMessages() {
           </div>
         </div>
       )}
+      <Toaster position="top-center" />
     </div>
   );
 }

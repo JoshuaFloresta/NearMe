@@ -13,6 +13,16 @@ import { isAdminRole, normalizeRole, requireAuth } from '../security.js';
 
 // Create an Express router instance to register specific routes for providers.
 const router = express.Router();
+const providerReportCategories = {
+  harassment: 'Harassment',
+  scam_fraud: 'Scam or Fraud',
+  false_information: 'False Information',
+  violence: 'Violence or Threats',
+  adult_content: 'Adult Content',
+  unsafe_behavior: 'Unsafe Behavior',
+  discrimination: 'Discrimination',
+  other: 'Other',
+};
 
 // parseProviderId: accept either a numeric provider id or a MongoDB ObjectId string.
 // Returns a query object usable in MongoDB lookups, or null if the input is invalid.
@@ -165,6 +175,21 @@ const withStartingRate = (provider, startingRateMap) => {
   const startingRate = key && startingRateMap.has(key) ? numericOrDefault(startingRateMap.get(key), baseRate) : baseRate;
   return { ...provider, startingRate };
 };
+const getCurrentlyWorkingUserIds = async (providers = []) => {
+  const providerUserIds = Array.from(new Set(
+    providers.map((provider) => String(provider?.userId || '').trim()).filter(Boolean)
+  ));
+  if (providerUserIds.length === 0) return new Set();
+  const rows = await getDB().collection('jobs_ledger').find({
+    providerUserId: { $in: providerUserIds },
+    status: 'In Progress',
+  }).project({ providerUserId: 1 }).toArray();
+  return new Set(rows.map((row) => String(row.providerUserId || '').trim()).filter(Boolean));
+};
+const withCurrentlyWorking = (provider, currentlyWorkingUserIds) => ({
+  ...provider,
+  currentlyWorking: currentlyWorkingUserIds.has(String(provider?.userId || '').trim()),
+});
 const providerReviewIdCandidates = (provider) => {
   const values = [
     provider?.id,
@@ -173,14 +198,29 @@ const providerReviewIdCandidates = (provider) => {
   ].filter((value) => value !== null && value !== undefined && String(value).trim());
   return Array.from(new Set(values));
 };
+const uniqueProviderReviews = (reviews = []) => {
+  const seen = new Set();
+  return reviews.filter((review, index) => {
+    const jobId = String(review?.jobId || '').trim();
+    const customerUserId = String(review?.customerUserId || '').trim();
+    const key = jobId
+      ? `job:${jobId}`
+      : customerUserId
+        ? `standalone:${customerUserId}`
+        : `record:${String(review?._id || index)}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+};
 const recalculateProviderReviewStats = async (provider) => {
   const candidates = providerReviewIdCandidates(provider);
   if (candidates.length === 0) return { count: 0, rating: 0 };
 
-  const reviews = await getDB().collection('reviews').find({
+  const reviews = uniqueProviderReviews(await getDB().collection('reviews').find({
     providerId: { $in: candidates },
     status: { $ne: 'deleted' },
-  }).toArray();
+  }).sort({ updatedAt: -1, createdAt: -1 }).toArray());
 
   const ratings = reviews
     .map((review) => Number(review?.rating || 0))
@@ -197,7 +237,7 @@ const recalculateProviderReviewStats = async (provider) => {
 router.get('/services', async (req, res) => {
   try {
     // Fetch all documents from `services` collection and sort alphabetically by label.
-    const services = await getDB().collection('services').find().sort({ label: 1 }).toArray();
+    const services = await getDB().collection('services').find({ isArchived: { $ne: true }, active: { $ne: false } }).sort({ label: 1 }).toArray();
     // Return the list to the frontend as JSON.
     res.json(services);
   } catch (error) {
@@ -290,7 +330,7 @@ router.get('/providers', async (req, res) => {
   try {
     const { search, serviceId, available, maxRate, minRating } = req.query;
     // Base query excludes providers that have `discoverable = false` so admin-hidden ones are omitted.
-    const query = { discoverable: { $ne: false } };
+    const query = { discoverable: { $ne: false }, isDeleted: { $ne: true }, deletedAt: { $exists: false } };
 
     // Apply simple filters based on query params; these come from the frontend search UI.
     if (serviceId) query.serviceId = serviceId;
@@ -308,8 +348,11 @@ router.get('/providers', async (req, res) => {
 
     // Sort by rating and jobs so higher-rated and busier providers surface first.
     const providers = await getDB().collection('providers').find(query).sort({ rating: -1, jobs: -1 }).toArray();
-    const startingRateMap = await getStartingRateMap(providers);
-    res.json(providers.map((provider) => withStartingRate(provider, startingRateMap)));
+    const [startingRateMap, currentlyWorkingUserIds] = await Promise.all([
+      getStartingRateMap(providers),
+      getCurrentlyWorkingUserIds(providers),
+    ]);
+    res.json(providers.map((provider) => withCurrentlyWorking(withStartingRate(provider, startingRateMap), currentlyWorkingUserIds)));
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -335,11 +378,18 @@ router.get('/providers/:id', async (req, res) => {
     const query = parseProviderId(req.params.id);
     if (!query) return res.status(400).json({ error: 'Invalid provider ID' });
 
-    const provider = await getDB().collection('providers').findOne(query);
+    const provider = await getDB().collection('providers').findOne({
+      ...query,
+      isDeleted: { $ne: true },
+      archivedAt: { $exists: false },
+    });
     if (!provider) return res.status(404).json({ error: 'Provider not found' });
 
-    const startingRateMap = await getStartingRateMap([provider]);
-    res.json(withStartingRate(provider, startingRateMap));
+    const [startingRateMap, currentlyWorkingUserIds] = await Promise.all([
+      getStartingRateMap([provider]),
+      getCurrentlyWorkingUserIds([provider]),
+    ]);
+    res.json(withCurrentlyWorking(withStartingRate(provider, startingRateMap), currentlyWorkingUserIds));
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -437,6 +487,58 @@ router.patch('/providers/:id', requireAuth, async (req, res) => {
   }
 });
 
+// Route: POST /providers/:id/reports
+// Allow clients to send categorized safety complaints about a provider for admin review.
+router.post('/providers/:id/reports', requireAuth, async (req, res) => {
+  try {
+    const actorRole = normalizeRole(req.user?.role || '');
+    if (!['client', 'customer', 'user'].includes(actorRole)) {
+      return res.status(403).json({ error: 'Only clients can report a provider' });
+    }
+    const query = parseProviderId(req.params.id);
+    if (!query) return res.status(400).json({ error: 'Invalid provider ID' });
+    const provider = await getDB().collection('providers').findOne({
+      ...query,
+      isDeleted: { $ne: true },
+      deletedAt: { $exists: false },
+    });
+    if (!provider) return res.status(404).json({ error: 'Provider not found' });
+
+    const category = String(req.body?.category || '').trim().toLowerCase();
+    const details = String(req.body?.details || '').trim();
+    if (!providerReportCategories[category]) {
+      return res.status(400).json({ error: 'Choose a valid report category' });
+    }
+    if (details.length < 20 || details.length > 1000) {
+      return res.status(400).json({ error: 'Report details must be 20 to 1000 characters' });
+    }
+
+    const highPriority = ['scam_fraud', 'violence', 'adult_content'].includes(category);
+    const now = new Date();
+    const report = {
+      type: 'Provider Complaint',
+      subject: `${providerReportCategories[category]} report about ${provider.name || 'provider'}`,
+      category,
+      categoryLabel: providerReportCategories[category],
+      details,
+      providerId: provider.id ?? String(provider._id),
+      providerObjectId: String(provider._id),
+      providerUserId: provider.userId ? String(provider.userId) : '',
+      providerName: provider.name || 'Provider',
+      reporterUserId: String(req.user._id),
+      reporterName: req.user.name || [req.user.fname, req.user.lname].filter(Boolean).join(' ') || 'Customer',
+      priority: highPriority ? 'High' : 'Normal',
+      status: 'open',
+      createdAt: now,
+      updatedAt: now,
+    };
+    const result = await getDB().collection('reports').insertOne(report);
+    res.status(201).json({ ...report, _id: result.insertedId });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Route: GET /providers/:id/reviews
 // Fetch reviews for a provider. Accepts either numeric id or string/ObjectId id.
 router.get('/providers/:id/reviews', async (req, res) => {
@@ -445,12 +547,13 @@ router.get('/providers/:id/reviews', async (req, res) => {
     const providerId = Number.isInteger(numericId) ? numericId : req.params.id;
     // Query reviews where providerId matches either numeric or string form to support legacy data.
     const reviews = await getDB().collection('reviews').find({
+      status: { $ne: 'deleted' },
       $or: [
         { providerId },
         { providerId: String(providerId) },
       ],
-    }).sort({ createdAt: -1 }).toArray();
-    res.json(reviews);
+    }).sort({ updatedAt: -1, createdAt: -1 }).toArray();
+    res.json(uniqueProviderReviews(reviews));
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -468,7 +571,11 @@ router.post('/providers/:id/reviews', requireAuth, async (req, res) => {
       return res.status(403).json({ error: 'Only clients can leave provider reviews' });
     }
 
-    const provider = await getDB().collection('providers').findOne(query);
+    const provider = await getDB().collection('providers').findOne({
+      ...query,
+      isDeleted: { $ne: true },
+      archivedAt: { $exists: false },
+    });
     if (!provider) return res.status(404).json({ error: 'Provider not found' });
 
     // Validate rating and text length to avoid spam/invalid reviews.
@@ -481,7 +588,8 @@ router.post('/providers/:id/reviews', requireAuth, async (req, res) => {
       return res.status(400).json({ error: 'Review text must be 10 to 500 characters' });
     }
 
-    const review = {
+    const now = new Date();
+    const reviewFields = {
       providerId: provider.id ?? String(provider._id),
       providerUserId: provider.userId ? String(provider.userId) : null,
       customerUserId: String(req.user._id),
@@ -489,23 +597,43 @@ router.post('/providers/:id/reviews', requireAuth, async (req, res) => {
       rating,
       text,
       status: 'published',
-      createdAt: new Date(),
-      updatedAt: new Date(),
+      updatedAt: now,
     };
+    const candidates = providerReviewIdCandidates(provider);
+    const existing = await getDB().collection('reviews').findOne({
+      providerId: { $in: candidates },
+      customerUserId: String(req.user._id),
+      jobId: { $exists: false },
+      status: { $ne: 'deleted' },
+    }, { sort: { updatedAt: -1, createdAt: -1 } });
+    let savedReview;
+    let created = false;
 
-    const result = await getDB().collection('reviews').insertOne(review);
+    if (existing) {
+      await getDB().collection('reviews').updateOne(
+        { _id: existing._id },
+        { $set: reviewFields }
+      );
+      savedReview = { ...existing, ...reviewFields };
+    } else {
+      const review = { ...reviewFields, createdAt: now };
+      const result = await getDB().collection('reviews').insertOne(review);
+      savedReview = { ...review, _id: result.insertedId };
+      created = true;
+    }
 
-    const currentReviews = Number(provider.reviews || 0);
-    const currentRating = Number(provider.rating || 0);
-    const nextReviews = currentReviews + 1;
-    const nextRating = Math.round((((currentRating * currentReviews) + rating) / nextReviews) * 10) / 10;
+    const nextStats = await recalculateProviderReviewStats(provider);
 
     await getDB().collection('providers').updateOne(
       { _id: provider._id },
       { $set: { reviews: nextStats.count, rating: nextStats.rating, updatedAt: new Date() } }
     );
 
-    res.status(201).json({ ...review, _id: result.insertedId });
+    res.status(created ? 201 : 200).json({
+      review: savedReview,
+      created,
+      provider: { reviews: nextStats.count, rating: nextStats.rating },
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

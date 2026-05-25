@@ -72,6 +72,11 @@ const toNumber = (value, fallback = 0) => {
 };
 const calendarWeekdays = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const weekdayKeys = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+const localDateKey = (value) => {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+};
 const toTitleCase = (value = '') => String(value)
   .trim()
   .replace(/\s+/g, ' ')
@@ -226,12 +231,34 @@ export default function NearMeProviderDashboard({ focusSection = null }) {
   const [inquiryQuoteForm, setInquiryQuoteForm] = useState({ price: '', inclusions: '', breakdown: '', description: '' });
   const [calendarDetail, setCalendarDetail] = useState({ open: false, date: null, jobs: [], dayMeta: null });
   const [bookingDetail, setBookingDetail] = useState({ open: false, booking: null });
+  const [payoutSummary, setPayoutSummary] = useState({
+    totalEarnings: 0,
+    cashoutEligibleEarnings: 0,
+    reservedEarnings: 0,
+    availableEarnings: 0,
+    serviceFeeRate: 0.15,
+    payoutCycleDays: 15,
+    nextEligibleAt: null,
+    canRequestPayout: false,
+    pendingRequest: null,
+    requests: [],
+  });
+  const [payoutLoading, setPayoutLoading] = useState(false);
+  const [payoutSubmitting, setPayoutSubmitting] = useState(false);
+  const [payoutForm, setPayoutForm] = useState({
+    amount: '',
+    paymentMethod: 'gcash',
+    accountName: '',
+    accountNumber: '',
+    institution: '',
+  });
   const [workTab, setWorkTab] = useState('calendar');
   const isOverview = !focusSection;
   const isCalendarView = isOverview || focusSection === 'calendar';
   const isBookingsView = isOverview || focusSection === 'bookings';
   const isChatView = isOverview || focusSection === 'chat-history';
   const isPricingView = isOverview || focusSection === 'pricing';
+  const isCashoutView = focusSection === 'cashout';
   const isReviewsView = isOverview || focusSection === 'reviews';
   const isSettingsView = isOverview || focusSection === 'settings';
   const isFocusedView = !isOverview;
@@ -495,6 +522,27 @@ export default function NearMeProviderDashboard({ focusSection = null }) {
     }
   }, [settingsForm.serviceId, settingsForm.service]);
 
+  const loadPayoutSummary = async () => {
+    if (!user?.id || focusSection !== 'cashout') return;
+    setPayoutLoading(true);
+    try {
+      const summary = await apiRequest('/api/v1/provider-payouts/summary');
+      setPayoutSummary(summary);
+      setPayoutForm((current) => ({
+        ...current,
+        amount: current.amount || (Number(summary.availableEarnings || 0) > 0 ? String(summary.availableEarnings) : ''),
+      }));
+    } catch (error) {
+      toast.error(error.message || 'Could not load payout summary');
+    } finally {
+      setPayoutLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadPayoutSummary();
+  }, [user?.id, focusSection]);
+
   const runJobAction = async (jobId, action, body = {}) => {
     try {
       const updated = await apiRequest(`/api/v1/jobs/${jobId}/${action}`, {
@@ -577,6 +625,35 @@ export default function NearMeProviderDashboard({ focusSection = null }) {
       toast.error(error.message || 'Could not submit work proof');
     } finally {
       setSubmittingDone(false);
+    }
+  };
+
+  const submitPayoutRequest = async (event) => {
+    event.preventDefault();
+    const amount = Number(payoutForm.amount || 0);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      toast.error('Enter a valid cashout amount.');
+      return;
+    }
+    setPayoutSubmitting(true);
+    try {
+      await apiRequest('/api/v1/provider-payouts', {
+        method: 'POST',
+        body: JSON.stringify({
+          amount,
+          paymentMethod: payoutForm.paymentMethod,
+          accountName: payoutForm.accountName.trim(),
+          accountNumber: payoutForm.accountNumber.trim(),
+          institution: payoutForm.institution.trim(),
+        }),
+      });
+      toast.success('Payout request submitted for admin validation.');
+      setPayoutForm((current) => ({ ...current, amount: '' }));
+      await loadPayoutSummary();
+    } catch (error) {
+      toast.error(error.message || 'Could not request payout');
+    } finally {
+      setPayoutSubmitting(false);
     }
   };
 
@@ -853,7 +930,7 @@ export default function NearMeProviderDashboard({ focusSection = null }) {
     const scheduledAt = new Date(`${bookingDate}T${bookingTime}:00`);
     if (Number.isNaN(scheduledAt.getTime())) return { ok: true, reason: '' };
 
-    const dateKey = scheduledAt.toISOString().slice(0, 10);
+    const dateKey = bookingDate;
     const dayKey = weekdayKeys[scheduledAt.getDay()];
     const override = settingsForm.availabilityOverrides?.[dateKey];
     const availableByDay = override ? override.available !== false : (settingsForm.availabilityDays || []).includes(dayKey);
@@ -893,7 +970,7 @@ export default function NearMeProviderDashboard({ focusSection = null }) {
   ), [bookingQueueRows, providerProfile.service]);
   const isWorkingDay = (date) => {
     const dateObj = new Date(date);
-    const dateKey = dateObj.toISOString().slice(0, 10);
+    const dateKey = localDateKey(dateObj);
     const override = settingsForm.availabilityOverrides?.[dateKey];
     if (override) return override.available !== false;
     const key = weekdayKeys[dateObj.getDay()];
@@ -901,7 +978,7 @@ export default function NearMeProviderDashboard({ focusSection = null }) {
   };
   const isWithinWorkingHours = (date) => {
     const dateObj = new Date(date);
-    const dateKey = dateObj.toISOString().slice(0, 10);
+    const dateKey = localDateKey(dateObj);
     const override = settingsForm.availabilityOverrides?.[dateKey];
     const start = String(override?.start || settingsForm.workingHours?.start || '08:00');
     const end = String(override?.end || settingsForm.workingHours?.end || '18:00');
@@ -932,7 +1009,7 @@ export default function NearMeProviderDashboard({ focusSection = null }) {
       ));
       const availableDay = isWorkingDay(date);
       const outOfHoursJobs = dayJobs.filter((job) => !isWithinWorkingHours(job.scheduledAtDate));
-      const dateKey = date.toISOString().slice(0, 10);
+      const dateKey = localDateKey(date);
       const override = settingsForm.availabilityOverrides?.[dateKey] || null;
       const effectiveStart = override?.start || settingsForm.workingHours?.start || '08:00';
       const effectiveEnd = override?.end || settingsForm.workingHours?.end || '18:00';
@@ -1487,6 +1564,7 @@ export default function NearMeProviderDashboard({ focusSection = null }) {
               ['Bookings', FileCheck2, '/provider-dashboard/bookings'],
               ['Chat History', MessageSquareText, '/provider-dashboard/chat-history'],
               ['Pricing', WalletCards, '/provider-dashboard/pricing'],
+              ['Cashout', Banknote, '/provider-dashboard/cashout'],
               ['Reviews', Star, '/provider-dashboard/reviews'],
               ['Settings', Settings, '/provider-dashboard/settings'],
             ].map(([label, Icon, href]) => (
@@ -1805,6 +1883,110 @@ export default function NearMeProviderDashboard({ focusSection = null }) {
                   </tbody>
                 </table>
               </div>
+              </Panel>
+            )}
+
+            {isCashoutView && (
+              <Panel
+                title="Cashout Earnings"
+                icon={Banknote}
+                action={<StatusPill tone={payoutSummary.pendingRequest ? 'yellow' : payoutSummary.canRequestPayout ? 'blue' : 'ink'}>{payoutSummary.pendingRequest ? 'Admin Review Pending' : payoutSummary.canRequestPayout ? 'Eligible' : 'Not Eligible'}</StatusPill>}
+              >
+                {payoutLoading ? (
+                  <div className="border-2 border-dashed border-bauhaus-ink bg-bauhaus-canvas p-8 text-center font-black text-xs uppercase tracking-wider text-bauhaus-ink/45">Loading earnings...</div>
+                ) : (
+                  <div className="space-y-5">
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                      {[
+                        ['Total Earnings', payoutSummary.totalEarnings, 'Lifetime completed service revenue before cashouts.'],
+                        ['Eligible Online Earnings', payoutSummary.cashoutEligibleEarnings, 'Cashless or verified QR payments held for cashout.'],
+                        ['Available Earnings', payoutSummary.availableEarnings, 'Eligible amount not reserved or paid out.'],
+                      ].map(([label, amount, text]) => (
+                        <div key={label} className="border-2 border-bauhaus-ink bg-bauhaus-canvas p-4">
+                          <div className="font-black text-[10px] uppercase tracking-wider text-bauhaus-ink/50">{label}</div>
+                          <div className="mt-2 font-black text-2xl tracking-tight text-bauhaus-ink">PHP {Number(amount || 0).toLocaleString('en-PH')}</div>
+                          <p className="mt-2 font-medium text-xs text-bauhaus-ink/60">{text}</p>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="grid grid-cols-1 xl:grid-cols-[1fr_370px] gap-4">
+                      <form onSubmit={submitPayoutRequest} className="border-2 border-bauhaus-ink bg-white p-4 space-y-3">
+                        <div>
+                          <div className="font-black text-sm uppercase tracking-tight text-bauhaus-ink">Request Payout</div>
+                          <p className="mt-1 font-medium text-xs text-bauhaus-ink/60">Cashouts open every {payoutSummary.payoutCycleDays || 15} days. A 15% service fee is deducted from each approved payout.</p>
+                        </div>
+                        {payoutSummary.nextEligibleAt && !payoutSummary.canRequestPayout && !payoutSummary.pendingRequest && (
+                          <div className="border-2 border-bauhaus-ink bg-bauhaus-yellow p-3 font-bold text-xs text-bauhaus-ink">
+                            Next cashout date: {new Date(payoutSummary.nextEligibleAt).toLocaleDateString()}
+                          </div>
+                        )}
+                        {payoutSummary.pendingRequest && (
+                          <div className="border-2 border-bauhaus-ink bg-bauhaus-yellow p-3 font-bold text-xs text-bauhaus-ink">
+                            Your latest request is awaiting admin approval and validation.
+                          </div>
+                        )}
+                        <label className="block">
+                          <span className="font-black text-[10px] uppercase tracking-wider text-bauhaus-ink/55">Cashout Amount (PHP)</span>
+                          <input type="number" min="1" max={payoutSummary.availableEarnings || undefined} value={payoutForm.amount} onChange={(event) => setPayoutForm((current) => ({ ...current, amount: event.target.value }))} className="mt-1 w-full px-3 py-3 border-2 border-bauhaus-ink bg-white font-bold text-sm outline-none" />
+                        </label>
+                        <label className="block">
+                          <span className="font-black text-[10px] uppercase tracking-wider text-bauhaus-ink/55">Preferred Payout Method</span>
+                          <select value={payoutForm.paymentMethod} onChange={(event) => setPayoutForm((current) => ({ ...current, paymentMethod: event.target.value }))} className="mt-1 w-full px-3 py-3 border-2 border-bauhaus-ink bg-white font-bold text-sm outline-none">
+                            <option value="gcash">GCash</option>
+                            <option value="maya">Maya</option>
+                            <option value="bank_transfer">Bank Transfer</option>
+                          </select>
+                        </label>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                          <label className="block">
+                            <span className="font-black text-[10px] uppercase tracking-wider text-bauhaus-ink/55">Account Name</span>
+                            <input value={payoutForm.accountName} onChange={(event) => setPayoutForm((current) => ({ ...current, accountName: event.target.value }))} className="mt-1 w-full px-3 py-3 border-2 border-bauhaus-ink bg-white font-bold text-sm outline-none" />
+                          </label>
+                          <label className="block">
+                            <span className="font-black text-[10px] uppercase tracking-wider text-bauhaus-ink/55">Account Number</span>
+                            <input value={payoutForm.accountNumber} onChange={(event) => setPayoutForm((current) => ({ ...current, accountNumber: event.target.value }))} className="mt-1 w-full px-3 py-3 border-2 border-bauhaus-ink bg-white font-bold text-sm outline-none" />
+                          </label>
+                        </div>
+                        {payoutForm.paymentMethod === 'bank_transfer' && (
+                          <label className="block">
+                            <span className="font-black text-[10px] uppercase tracking-wider text-bauhaus-ink/55">Bank Name</span>
+                            <input value={payoutForm.institution} onChange={(event) => setPayoutForm((current) => ({ ...current, institution: event.target.value }))} className="mt-1 w-full px-3 py-3 border-2 border-bauhaus-ink bg-white font-bold text-sm outline-none" />
+                          </label>
+                        )}
+                        <div className="border-2 border-bauhaus-ink bg-bauhaus-canvas p-3 space-y-2">
+                          <div className="flex justify-between gap-3 font-bold text-xs text-bauhaus-ink"><span>Requested earnings</span><span>PHP {Number(payoutForm.amount || 0).toLocaleString('en-PH')}</span></div>
+                          <div className="flex justify-between gap-3 font-bold text-xs text-bauhaus-red"><span>Service fee (15%)</span><span>- PHP {(Number(payoutForm.amount || 0) * 0.15).toLocaleString('en-PH')}</span></div>
+                          <div className="flex justify-between gap-3 border-t-2 border-bauhaus-ink pt-2 font-black text-sm text-bauhaus-ink"><span>You receive</span><span>PHP {(Number(payoutForm.amount || 0) * 0.85).toLocaleString('en-PH')}</span></div>
+                        </div>
+                        <button type="submit" disabled={!payoutSummary.canRequestPayout || payoutSubmitting} className="w-full px-4 py-3 bg-bauhaus-red text-white border-2 border-bauhaus-ink font-black text-xs uppercase tracking-wider disabled:opacity-50">
+                          {payoutSubmitting ? 'Submitting...' : 'Request Admin-Validated Payout'}
+                        </button>
+                      </form>
+
+                      <div className="border-2 border-bauhaus-ink bg-bauhaus-canvas p-4">
+                        <div className="font-black text-sm uppercase tracking-tight text-bauhaus-ink">Payout History</div>
+                        <div className="mt-3 space-y-2">
+                          {(payoutSummary.requests || []).map((request) => (
+                            <div key={request._id} className="border-2 border-bauhaus-ink bg-white p-3">
+                              <div className="flex justify-between items-start gap-2">
+                                <div>
+                                  <div className="font-black text-xs uppercase tracking-tight text-bauhaus-ink">PHP {Number(request.netPayout || 0).toLocaleString('en-PH')} payout</div>
+                                  <div className="mt-1 font-bold text-[10px] uppercase tracking-wider text-bauhaus-ink/45">{new Date(request.createdAt).toLocaleDateString()} - {String(request.paymentMethod?.type || '').replace('_', ' ')}</div>
+                                </div>
+                                <StatusPill tone={request.status === 'approved' ? 'blue' : request.status === 'rejected' ? 'red' : 'yellow'}>{request.status}</StatusPill>
+                              </div>
+                              <div className="mt-2 font-medium text-xs text-bauhaus-ink/65">Requested PHP {Number(request.requestedAmount || 0).toLocaleString('en-PH')} - Fee PHP {Number(request.serviceFeeAmount || 0).toLocaleString('en-PH')}</div>
+                            </div>
+                          ))}
+                          {(payoutSummary.requests || []).length === 0 && (
+                            <div className="border-2 border-dashed border-bauhaus-ink bg-white p-5 text-center font-black text-xs uppercase tracking-wider text-bauhaus-ink/45">No payout requests yet</div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
               </Panel>
             )}
 

@@ -29,9 +29,9 @@ export default function ServiceCard({ provider, compact = false }) {
     >
       <div className={compact ? 'p-3 md:p-4' : 'p-5 md:p-6'}>
         <div className={`${compact ? 'mb-2.5' : 'mb-4'} flex items-center justify-between gap-3`}>
-          <div className={`inline-flex max-w-full items-center gap-1 px-2 py-1 border border-bauhaus-ink text-[10px] font-bold uppercase tracking-wider ${provider.available ? 'bg-bauhaus-yellow text-bauhaus-ink' : 'bg-white/80 text-bauhaus-ink/50'}`}>
+          <div className={`inline-flex max-w-full items-center gap-1 px-2 py-1 border border-bauhaus-ink text-[10px] font-bold uppercase tracking-wider ${provider.currentlyWorking ? 'bg-bauhaus-red text-white' : provider.available ? 'bg-bauhaus-yellow text-bauhaus-ink' : 'bg-white/80 text-bauhaus-ink/50'}`}>
             <Clock className="h-2.5 w-2.5 shrink-0" />
-            <span className="truncate">{provider.available ? 'Available' : 'Busy'}</span>
+            <span className="truncate">{provider.currentlyWorking ? 'Currently Working' : provider.available ? 'Available' : 'Busy'}</span>
           </div>
           <div className={`h-3 w-3 shrink-0 ${color}`} />
         </div>

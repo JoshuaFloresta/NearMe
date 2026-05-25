@@ -83,7 +83,7 @@ function ProviderMap({ providers, selected, onSelect, userLocation, radiusKm }) 
             eventHandlers={{ click: () => onSelect(provider) }}
             pathOptions={{
               color: '#121212',
-              fillColor: provider.available ? '#F0C020' : '#D02020',
+              fillColor: provider.currentlyWorking || !provider.available ? '#D02020' : '#F0C020',
               fillOpacity: 1,
               weight: providerKey(selected) === providerKey(provider) ? 4 : 2,
             }}
@@ -109,6 +109,7 @@ export default function NearMeBrowse() {
   const [maxRate, setMaxRate] = useState(1000);
   const [minRating, setMinRating] = useState(0);
   const [availableOnly, setAvailableOnly] = useState(false);
+  const [sortBy, setSortBy] = useState('nearest');
   const [viewMode, setViewMode] = useState('split');
   const [selectedProvider, setSelectedProvider] = useState(null);
   const [showFilters, setShowFilters] = useState(false);
@@ -181,8 +182,16 @@ export default function NearMeBrowse() {
       if (availableOnly && !provider.available) return false;
       if (hasCoordinates(provider) && provider.distance > radiusKm) return false;
       return true;
-    }).sort((a, b) => Number(a.distance || 0) - Number(b.distance || 0));
-  }, [providers, search, selectedCategories, minRate, maxRate, minRating, availableOnly, radiusKm, userLocation]);
+    }).sort((a, b) => {
+      if (sortBy === 'highest-reviews') {
+        const reviewDiff = Number(b.reviews || 0) - Number(a.reviews || 0);
+        if (reviewDiff !== 0) return reviewDiff;
+        const ratingDiff = Number(b.rating || 0) - Number(a.rating || 0);
+        if (ratingDiff !== 0) return ratingDiff;
+      }
+      return Number(a.distance || 0) - Number(b.distance || 0);
+    });
+  }, [providers, search, selectedCategories, minRate, maxRate, minRating, availableOnly, radiusKm, userLocation, sortBy]);
 
   const resetFilters = () => {
     setSearch('');
@@ -192,6 +201,7 @@ export default function NearMeBrowse() {
     setMinRating(0);
     setAvailableOnly(false);
     setRadiusKm(10);
+    setSortBy('nearest');
   };
 
   return (
@@ -354,6 +364,17 @@ export default function NearMeBrowse() {
                 />
                 <span className="font-bold text-xs uppercase tracking-wider text-bauhaus-ink">Available Now Only</span>
               </label>
+              <div>
+                <label className="font-bold text-[10px] uppercase tracking-widest text-bauhaus-ink/50 block mb-1">Sort Providers</label>
+                <select
+                  value={sortBy}
+                  onChange={(e) => setSortBy(e.target.value)}
+                  className="border-2 border-bauhaus-ink bg-white px-2 py-2 font-bold text-[11px] uppercase tracking-wider text-bauhaus-ink"
+                >
+                  <option value="nearest">Nearest First</option>
+                  <option value="highest-reviews">Highest Reviews</option>
+                </select>
+              </div>
               <button
                 onClick={resetFilters}
                 className="flex items-center gap-1 font-bold text-xs uppercase tracking-wider text-bauhaus-red hover:underline"

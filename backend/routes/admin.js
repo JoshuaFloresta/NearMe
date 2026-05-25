@@ -2,7 +2,7 @@ import express from 'express';
 import { ObjectId } from 'mongodb';
 import { getDB } from '../mongoConnect.js';
 import { addGeoLocation } from '../geo.js';
-import { emitAlert } from '../realtime.js';
+import { emitAlert, emitAlertToUsers } from '../realtime.js';
 import { requireAdmin, publicUser } from '../security.js';
 
 const router = express.Router();
@@ -74,9 +74,9 @@ router.get('/stats', async (req, res) => {
       reviewsCount,
       openReports,
     ] = await Promise.all([
-      db.collection('users').countDocuments(),
-      db.collection('providers').countDocuments(),
-      db.collection('providers').countDocuments({ available: true }),
+      db.collection('users').countDocuments({ isDeleted: { $ne: true }, deletedAt: { $exists: false } }),
+      db.collection('providers').countDocuments({ isDeleted: { $ne: true }, archivedAt: { $exists: false }, deletedAt: { $exists: false } }),
+      db.collection('providers').countDocuments({ available: true, isDeleted: { $ne: true }, archivedAt: { $exists: false }, deletedAt: { $exists: false } }),
       db.collection('provider_kyc').countDocuments({ status: 'pending' }),
       db.collection('bookings').countDocuments({ status: { $in: ['requested', 'provider_accepted', 'customer_confirmed', 'in_progress'] } }),
       db.collection('bookings').countDocuments({ status: { $in: ['completed', 'reviewed'] } }),
@@ -184,6 +184,70 @@ router.patch('/providers/:id', async (req, res) => {
   }
 });
 
+router.get('/providers-archive', async (req, res) => {
+  try {
+    const providers = await getDB().collection('providers')
+      .find({ $or: [{ isDeleted: true }, { archivedAt: { $exists: true } }, { deletedAt: { $exists: true } }] })
+      .sort({ archivedAt: -1 })
+      .toArray();
+    res.json(providers);
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.delete('/providers/:id', async (req, res) => {
+  try {
+    const query = parseId(req.params.id);
+    if (!query) return res.status(400).json({ success: false, error: 'Invalid provider ID' });
+    const provider = await getDB().collection('providers').findOne({ ...query, isDeleted: { $ne: true } });
+    if (!provider) return res.status(404).json({ success: false, error: 'Provider not found or already archived' });
+    const updated = await getDB().collection('providers').findOneAndUpdate(
+      { _id: provider._id },
+      {
+        $set: {
+          isDeleted: true,
+          archivedAt: new Date(),
+          archivedBy: String(req.user._id),
+          availableBeforeArchive: provider.available !== false,
+          available: false,
+          updatedAt: new Date(),
+        },
+      },
+      { returnDocument: 'after' }
+    );
+    res.json(updated);
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.patch('/providers/:id/restore', async (req, res) => {
+  try {
+    const query = parseId(req.params.id);
+    if (!query) return res.status(400).json({ success: false, error: 'Invalid provider ID' });
+    const provider = await getDB().collection('providers').findOne({
+      ...query,
+      $or: [{ isDeleted: true }, { archivedAt: { $exists: true } }, { deletedAt: { $exists: true } }],
+    });
+    if (!provider) return res.status(404).json({ success: false, error: 'Archived provider not found' });
+    if (provider.archivedViaUserId) {
+      return res.status(409).json({ success: false, error: 'Restore the linked user account to restore this provider profile.' });
+    }
+    const restored = await getDB().collection('providers').findOneAndUpdate(
+      { _id: provider._id },
+      {
+        $set: { isDeleted: false, available: provider.availableBeforeArchive !== false, updatedAt: new Date() },
+        $unset: { archivedAt: '', deletedAt: '', archivedBy: '', availableBeforeArchive: '' },
+      },
+      { returnDocument: 'after' }
+    );
+    res.json(restored);
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 router.get('/bookings', async (req, res) => {
   try {
     const bookings = await getDB().collection('bookings').find().sort({ createdAt: -1 }).toArray();
@@ -250,6 +314,54 @@ router.get('/transactions', async (req, res) => {
   }
 });
 
+router.get('/payouts', async (req, res) => {
+  try {
+    const payouts = await getDB().collection('provider_payout_requests').find().sort({ createdAt: -1 }).toArray();
+    res.json(payouts);
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.patch('/payouts/:id', async (req, res) => {
+  try {
+    if (!ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ success: false, error: 'Invalid payout request ID' });
+    }
+    const decision = String(req.body?.decision || '').trim().toLowerCase();
+    if (!['approve', 'reject'].includes(decision)) {
+      return res.status(400).json({ success: false, error: 'Decision must be approve or reject' });
+    }
+    const payoutReference = String(req.body?.payoutReference || '').trim();
+    if (decision === 'approve' && !payoutReference) {
+      return res.status(400).json({ success: false, error: 'Payout reference is required for approval' });
+    }
+    const status = decision === 'approve' ? 'approved' : 'rejected';
+    const now = new Date();
+    const updated = await getDB().collection('provider_payout_requests').findOneAndUpdate(
+      { _id: new ObjectId(req.params.id), status: 'pending' },
+      {
+        $set: {
+          status,
+          reviewedAt: now,
+          reviewedBy: String(req.user._id),
+          reviewNote: String(req.body?.reviewNote || '').trim(),
+          payoutReference: status === 'approved' ? payoutReference : '',
+          updatedAt: now,
+        },
+      },
+      { returnDocument: 'after' }
+    );
+    if (!updated) {
+      return res.status(409).json({ success: false, error: 'This payout request was already reviewed or does not exist.' });
+    }
+    emitAlertToUsers([updated.providerUserId], 'payout:reviewed', updated);
+    res.json(updated);
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 router.get('/reviews', async (req, res) => {
   try {
     const reviews = await getDB().collection('reviews').find().sort({ createdAt: -1 }).toArray();
@@ -285,7 +397,7 @@ router.patch('/reviews/:id', async (req, res) => {
 
 router.get('/services', async (req, res) => {
   try {
-    const services = await getDB().collection('services').find().sort({ label: 1 }).toArray();
+    const services = await getDB().collection('services').find({ isArchived: { $ne: true } }).sort({ label: 1 }).toArray();
     res.json(services);
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
@@ -340,9 +452,36 @@ router.patch('/services/:id', async (req, res) => {
 
 router.delete('/services/:id', async (req, res) => {
   try {
-    const result = await getDB().collection('services').deleteOne({ id: req.params.id });
-    if (result.deletedCount === 0) return res.status(404).json({ success: false, error: 'Service not found' });
-    res.json({ success: true, message: 'Service deleted' });
+    const result = await getDB().collection('services').findOneAndUpdate(
+      { id: req.params.id, isArchived: { $ne: true } },
+      { $set: { isArchived: true, active: false, archivedAt: new Date(), archivedBy: String(req.user._id), updatedAt: new Date() } },
+      { returnDocument: 'after' }
+    );
+    if (!result) return res.status(404).json({ success: false, error: 'Service not found or already archived' });
+    res.json({ success: true, message: 'Service category archived', service: result });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.get('/services-archive', async (req, res) => {
+  try {
+    const services = await getDB().collection('services').find({ isArchived: true }).sort({ archivedAt: -1 }).toArray();
+    res.json(services);
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.patch('/services/:id/restore', async (req, res) => {
+  try {
+    const restored = await getDB().collection('services').findOneAndUpdate(
+      { id: req.params.id, isArchived: true },
+      { $set: { isArchived: false, active: true, updatedAt: new Date() }, $unset: { archivedAt: '', archivedBy: '' } },
+      { returnDocument: 'after' }
+    );
+    if (!restored) return res.status(404).json({ success: false, error: 'Archived service category not found' });
+    res.json(restored);
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
@@ -352,6 +491,36 @@ router.get('/reports', async (req, res) => {
   try {
     const reports = await getDB().collection('reports').find().sort({ createdAt: -1 }).toArray();
     res.json(reports);
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.patch('/reports/:id', async (req, res) => {
+  try {
+    if (!ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ success: false, error: 'Invalid report ID' });
+    }
+    const allowedStatuses = ['open', 'investigating', 'escalated', 'resolved', 'dismissed'];
+    const status = String(req.body?.status || '').trim().toLowerCase();
+    if (!allowedStatuses.includes(status)) {
+      return res.status(400).json({ success: false, error: 'Invalid report status' });
+    }
+    const updated = await getDB().collection('reports').findOneAndUpdate(
+      { _id: new ObjectId(req.params.id) },
+      {
+        $set: {
+          status,
+          resolutionNote: String(req.body?.resolutionNote || '').trim(),
+          reviewedBy: String(req.user._id),
+          reviewedAt: new Date(),
+          updatedAt: new Date(),
+        },
+      },
+      { returnDocument: 'after' }
+    );
+    if (!updated) return res.status(404).json({ success: false, error: 'Report not found' });
+    res.json(updated);
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }

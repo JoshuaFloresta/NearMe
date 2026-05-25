@@ -17,8 +17,12 @@ const STATES = {
   DISPUTED: 'Disputed',
 };
 
-const PLATFORM_FEE_RATE = 0.1;
+const PLATFORM_FEE_RATE = 0.15;
 const WALLET_HIDE_THRESHOLD = -500;
+const PAYOUT_SERVICE_FEE_RATE = 0.15;
+const PAYOUT_CYCLE_DAYS = 15;
+const ACTIVE_PAYOUT_STATUSES = ['pending', 'approved'];
+const PAYOUT_METHODS = ['gcash', 'maya', 'bank_transfer'];
 
 const parseObjectId = (id) => (ObjectId.isValid(id) ? new ObjectId(id) : null);
 const toNumber = (value, fallback = 0) => {
@@ -41,6 +45,49 @@ const payMongoCheckoutMethods = () => {
 const parseHHMMToMinutes = (value, fallback) => {
   const [h, m] = String(value || fallback || '00:00').split(':').map((item) => Number(item || 0));
   return (h * 60) + m;
+};
+const payoutCycleMs = PAYOUT_CYCLE_DAYS * 24 * 60 * 60 * 1000;
+const payoutSummaryForProvider = async (providerUserId) => {
+  const db = getDB();
+  const [completedJobs, requests] = await Promise.all([
+    db.collection('jobs_ledger').find({
+      providerUserId: String(providerUserId),
+      status: STATES.COMPLETED,
+    }).project({ financials: 1, quote: 1 }).toArray(),
+    db.collection('provider_payout_requests').find({
+      providerUserId: String(providerUserId),
+    }).sort({ createdAt: -1 }).toArray(),
+  ]);
+  const totalEarnings = round2(completedJobs.reduce(
+    (total, job) => total + toNumber(job.financials?.grossPrice || job.quote?.grossPrice, 0),
+    0
+  ));
+  const cashoutEligibleEarnings = round2(completedJobs
+    .filter((job) => ['cashless', 'qr'].includes(String(job.financials?.paymentMethod || job.payment?.method || '').toLowerCase()))
+    .reduce((total, job) => total + toNumber(job.financials?.grossPrice || job.quote?.grossPrice, 0), 0));
+  const reservedEarnings = round2(requests
+    .filter((request) => ACTIVE_PAYOUT_STATUSES.includes(String(request.status || '').toLowerCase()))
+    .reduce((total, request) => total + toNumber(request.requestedAmount, 0), 0));
+  const availableEarnings = round2(Math.max(0, cashoutEligibleEarnings - reservedEarnings));
+  const latestCycleRequest = requests.find((request) => String(request.status || '').toLowerCase() !== 'rejected') || null;
+  const nextEligibleAt = latestCycleRequest?.createdAt
+    ? new Date(new Date(latestCycleRequest.createdAt).getTime() + payoutCycleMs)
+    : null;
+  const pendingRequest = requests.find((request) => String(request.status || '').toLowerCase() === 'pending') || null;
+  const eligibleByDate = !nextEligibleAt || nextEligibleAt.getTime() <= Date.now();
+
+  return {
+    totalEarnings,
+    cashoutEligibleEarnings,
+    reservedEarnings,
+    availableEarnings,
+    serviceFeeRate: PAYOUT_SERVICE_FEE_RATE,
+    payoutCycleDays: PAYOUT_CYCLE_DAYS,
+    nextEligibleAt,
+    canRequestPayout: availableEarnings > 0 && !pendingRequest && eligibleByDate,
+    pendingRequest,
+    requests,
+  };
 };
 
 const isProviderActor = (job, user) => String(job.providerUserId || '') === String(user._id);
@@ -202,7 +249,11 @@ router.post('/v1/jobs', requireAuth, async (req, res) => {
       : parseObjectId(providerId) ? { _id: parseObjectId(providerId) } : null;
     if (!providerQuery) return res.status(400).json({ error: 'Invalid providerId' });
 
-    const provider = await getDB().collection('providers').findOne(providerQuery);
+    const provider = await getDB().collection('providers').findOne({
+      ...providerQuery,
+      isDeleted: { $ne: true },
+      archivedAt: { $exists: false },
+    });
     if (!provider) return res.status(404).json({ error: 'Provider not found' });
     if (provider.discoverable === false) return res.status(409).json({ error: 'Provider is temporarily unavailable' });
 
@@ -288,7 +339,11 @@ const acceptInquiryHandler = async (req, res) => {
     const providerQuery = Number.isInteger(Number(providerId))
       ? { id: Number(providerId) }
       : parseObjectId(providerId) ? { _id: parseObjectId(providerId) } : { _id: providerId };
-    const provider = await getDB().collection('providers').findOne(providerQuery);
+    const provider = await getDB().collection('providers').findOne({
+      ...providerQuery,
+      isDeleted: { $ne: true },
+      archivedAt: { $exists: false },
+    });
     if (!provider) return res.status(404).json({ error: 'Provider not found' });
     const providerOwnerMatch = String(provider.userId || '') === String(req.user._id)
       || (provider.email && req.user.email && String(provider.email).toLowerCase() === String(req.user.email).toLowerCase());
@@ -310,7 +365,7 @@ const acceptInquiryHandler = async (req, res) => {
       return res.status(400).json({ error: 'Invalid booking date/time' });
     }
 
-    const dateKey = scheduledAt.toISOString().slice(0, 10);
+    const dateKey = String(bookingDate);
     const dayKey = weekdayKeys[scheduledAt.getDay()];
     const overrides = provider.availabilityOverrides && typeof provider.availabilityOverrides === 'object'
       ? provider.availabilityOverrides
@@ -1221,7 +1276,11 @@ router.get('/v1/providers/:id/offers', async (req, res) => {
       : parseObjectId(providerId) ? { _id: parseObjectId(providerId) } : null;
     if (!providerQuery) return res.status(400).json({ error: 'Invalid provider id' });
 
-    const provider = await getDB().collection('providers').findOne(providerQuery);
+    const provider = await getDB().collection('providers').findOne({
+      ...providerQuery,
+      isDeleted: { $ne: true },
+      archivedAt: { $exists: false },
+    });
     if (!provider) return res.status(404).json({ error: 'Provider not found' });
 
     const providerUserId = String(provider.userId || '').trim();
@@ -1445,6 +1504,91 @@ const deleteProviderServiceHandler = async (req, res) => {
 };
 router.delete('/v1/provider-services/:id', requireAuth, deleteProviderServiceHandler);
 router.delete('/provider-services/:id', requireAuth, deleteProviderServiceHandler);
+
+router.get('/v1/provider-payouts/summary', requireAuth, async (req, res) => {
+  try {
+    if (!isProviderRole(req.user.role)) {
+      return res.status(403).json({ error: 'Provider access required' });
+    }
+    const summary = await payoutSummaryForProvider(String(req.user._id));
+    res.json(summary);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.post('/v1/provider-payouts', requireAuth, async (req, res) => {
+  try {
+    if (!isProviderRole(req.user.role)) {
+      return res.status(403).json({ error: 'Provider access required' });
+    }
+    const providerUserId = String(req.user._id);
+    const summary = await payoutSummaryForProvider(providerUserId);
+    if (summary.pendingRequest) {
+      return res.status(409).json({ error: 'You already have a payout request waiting for admin approval.' });
+    }
+    if (summary.nextEligibleAt && new Date(summary.nextEligibleAt).getTime() > Date.now()) {
+      return res.status(409).json({
+        error: `Your next cashout window opens on ${new Date(summary.nextEligibleAt).toLocaleDateString('en-PH')}.`,
+      });
+    }
+
+    const requestedAmount = round2(req.body?.amount || 0);
+    if (requestedAmount <= 0) return res.status(400).json({ error: 'Enter a valid cashout amount.' });
+    if (requestedAmount > summary.availableEarnings) {
+      return res.status(400).json({ error: 'Cashout amount exceeds your available earnings.' });
+    }
+
+    const method = String(req.body?.paymentMethod || '').trim().toLowerCase();
+    const accountName = String(req.body?.accountName || '').trim();
+    const accountNumber = String(req.body?.accountNumber || '').trim();
+    const institution = String(req.body?.institution || '').trim();
+    if (!PAYOUT_METHODS.includes(method)) {
+      return res.status(400).json({ error: 'Choose a valid payout method.' });
+    }
+    if (!accountName || !accountNumber) {
+      return res.status(400).json({ error: 'Account name and account number are required.' });
+    }
+    if (method === 'bank_transfer' && !institution) {
+      return res.status(400).json({ error: 'Bank name is required for bank transfer.' });
+    }
+
+    const provider = await getDB().collection('providers').findOne({ userId: providerUserId });
+    const serviceFeeAmount = round2(requestedAmount * PAYOUT_SERVICE_FEE_RATE);
+    const netPayout = round2(requestedAmount - serviceFeeAmount);
+    const now = new Date();
+    const request = {
+      providerUserId,
+      providerId: provider?.id ?? null,
+      providerObjectId: provider?._id ? String(provider._id) : null,
+      providerName: provider?.name || req.user.name || req.user.email || 'Provider',
+      requestedAmount,
+      serviceFeeRate: PAYOUT_SERVICE_FEE_RATE,
+      serviceFeeAmount,
+      netPayout,
+      currency: 'PHP',
+      paymentMethod: {
+        type: method,
+        accountName,
+        accountNumber,
+        institution: method === 'bank_transfer' ? institution : '',
+      },
+      status: 'pending',
+      createdAt: now,
+      updatedAt: now,
+      reviewedAt: null,
+      reviewedBy: null,
+      reviewNote: '',
+      payoutReference: '',
+    };
+    const result = await getDB().collection('provider_payout_requests').insertOne(request);
+    const created = { ...request, _id: result.insertedId };
+    emitAlertToRole('admin', 'payout:requested', created);
+    res.status(201).json(created);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
 
 router.post('/v1/providers/:id/wallet/topup', requireAuth, async (req, res) => {
   try {

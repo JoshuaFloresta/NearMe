@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { MapPin, CheckCircle, MessageCircle, Calendar, Briefcase, Award, ChevronLeft, Clock, Heart, Share2 } from 'lucide-react';
+import { MapPin, CheckCircle, MessageCircle, Calendar, Briefcase, Award, ChevronLeft, Clock, Flag, Heart, Share2, X } from 'lucide-react';
+import { toast, Toaster } from 'sonner';
 import NearMeNav from '../components/nearme/NearMeNav';
 import NearMeFooter from '../components/nearme/NearMeFooter';
 import StarRating from '../components/nearme/StarRating';
@@ -30,6 +31,7 @@ const emptyProvider = {
   gallery: [],
   availabilityDays: ['mon', 'tue', 'wed', 'thu', 'fri', 'sat'],
   workingHours: { start: '08:00', end: '18:00' },
+  availabilityOverrides: {},
   joinedYear: '',
 };
 
@@ -37,6 +39,16 @@ const providerKey = (provider) => provider.id || provider._id || 0;
 const normalizeCategory = (value = '') => String(value).toLowerCase().trim();
 const favoritesStorageKey = 'nearme_favorite_providers';
 const weekdayLabels = { sun: 'Sun', mon: 'Mon', tue: 'Tue', wed: 'Wed', thu: 'Thu', fri: 'Fri', sat: 'Sat' };
+const reportCategories = [
+  { value: 'harassment', label: 'Harassment' },
+  { value: 'scam_fraud', label: 'Scam or Fraud' },
+  { value: 'false_information', label: 'False Information' },
+  { value: 'violence', label: 'Violence or Threats' },
+  { value: 'adult_content', label: 'Adult Content' },
+  { value: 'unsafe_behavior', label: 'Unsafe Behavior' },
+  { value: 'discrimination', label: 'Discrimination' },
+  { value: 'other', label: 'Other' },
+];
 const formatHour12 = (timeValue, fallback) => {
   const [rawHour, rawMinute] = String(timeValue || fallback || '00:00').split(':');
   const hour = Number(rawHour || 0);
@@ -50,6 +62,28 @@ const formatHour12 = (timeValue, fallback) => {
 const formatReviewDate = (review) => {
   const date = new Date(review.createdAt);
   return Number.isNaN(date.getTime()) ? '' : date.toLocaleDateString(undefined, { month: 'short', year: 'numeric' });
+};
+const weekdayKeys = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+const bookingAvailabilityError = (provider, payload) => {
+  const date = String(payload?.bookingDate || '').trim();
+  const time = String(payload?.bookingTime || '').trim();
+  if (!date || !time) return '';
+  const scheduledAt = new Date(`${date}T${time}:00`);
+  if (Number.isNaN(scheduledAt.getTime())) return '';
+  const override = provider?.availabilityOverrides?.[date] || null;
+  const availableDays = Array.isArray(provider?.availabilityDays) && provider.availabilityDays.length > 0
+    ? provider.availabilityDays
+    : ['mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+  if (override ? override.available === false : !availableDays.includes(weekdayKeys[scheduledAt.getDay()])) {
+    return 'This provider is off on your selected date. Please choose an available day.';
+  }
+  const [startHour, startMinute] = String(override?.start || provider?.workingHours?.start || '08:00').split(':').map(Number);
+  const [endHour, endMinute] = String(override?.end || provider?.workingHours?.end || '18:00').split(':').map(Number);
+  const minutes = (scheduledAt.getHours() * 60) + scheduledAt.getMinutes();
+  if (minutes < ((startHour * 60) + startMinute) || minutes > ((endHour * 60) + endMinute)) {
+    return `Please choose a time within the provider's working hours (${formatHour12(`${startHour}:${String(startMinute).padStart(2, '0')}`, '8:00 AM')} - ${formatHour12(`${endHour}:${String(endMinute).padStart(2, '0')}`, '6:00 PM')}).`;
+  }
+  return '';
 };
 
 const getFavoriteIds = () => {
@@ -79,6 +113,9 @@ export default function NearMeProvider() {
   const [isFavorite, setIsFavorite] = useState(false);
   const [reviewForm, setReviewForm] = useState({ rating: 0, text: '' });
   const [reviewSubmitting, setReviewSubmitting] = useState(false);
+  const [showReportModal, setShowReportModal] = useState(false);
+  const [reportForm, setReportForm] = useState({ category: 'harassment', details: '' });
+  const [reportSubmitting, setReportSubmitting] = useState(false);
   const currentUserId = String(currentUser?.id || '').trim();
   const currentUserRole = String(currentUser?.role || '').trim().toLowerCase();
   const canCurrentUserReview = Boolean(currentUserId) && ['client', 'customer', 'user'].includes(currentUserRole);
@@ -198,36 +235,47 @@ export default function NearMeProvider() {
 
   const sendInquiryRequest = async (payload) => {
     if (!currentUser || !getStoredToken()) {
-      alert('Please log in before contacting a provider.');
-      return;
+      toast.error('Please log in before contacting a provider.');
+      return false;
     }
     if (currentUser.role === 'provider' && currentUser.providerStatus !== 'approved') {
-      alert('Your provider account is not approved yet. You cannot hire other providers at this time.');
-      return;
+      toast.error('Your provider account is not approved yet. You cannot hire other providers at this time.');
+      return false;
+    }
+    const availabilityError = bookingAvailabilityError(provider, payload);
+    if (availabilityError) {
+      toast.error(availabilityError);
+      return false;
     }
 
-    const conversation = await apiRequest('/api/conversations', {
-      method: 'POST',
-      body: JSON.stringify({ providerId: providerKey(provider), status: 'Inquiry' }),
-    });
+    try {
+      const conversation = await apiRequest('/api/conversations', {
+        method: 'POST',
+        body: JSON.stringify({ providerId: providerKey(provider), status: 'Inquiry' }),
+      });
 
-    const inquiryCard = {
-      inquiryId: `inq-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      type: 'inquiry_card',
-      serviceSelection: payload.serviceSelection || null,
-      serviceCategory: payload.serviceCategory,
-      bookingDate: payload.bookingDate,
-      bookingTime: payload.bookingTime,
-      address: payload.address,
-      notes: payload.notes || '',
-      dynamicFields: payload.dynamicFields || {},
-    };
+      const inquiryCard = {
+        inquiryId: `inq-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        type: 'inquiry_card',
+        serviceSelection: payload.serviceSelection || null,
+        serviceCategory: payload.serviceCategory,
+        bookingDate: payload.bookingDate,
+        bookingTime: payload.bookingTime,
+        address: payload.address,
+        notes: payload.notes || '',
+        dynamicFields: payload.dynamicFields || {},
+      };
 
-    await apiRequest(`/api/conversations/${conversation._id}/messages`, {
-      method: 'POST',
-      body: JSON.stringify({ text: `INQUIRY_CARD::${JSON.stringify(inquiryCard)}` }),
-    });
-    alert('Inquiry sent. Continue in Messages.');
+      await apiRequest(`/api/conversations/${conversation._id}/messages`, {
+        method: 'POST',
+        body: JSON.stringify({ text: `INQUIRY_CARD::${JSON.stringify(inquiryCard)}` }),
+      });
+      toast.success('Inquiry sent. Continue in Messages.');
+      return true;
+    } catch (error) {
+      toast.error(error.message || 'Could not send inquiry.');
+      return false;
+    }
   };
 
   const submitReview = async () => {
@@ -273,6 +321,40 @@ export default function NearMeProvider() {
       alert(error.message || 'Could not submit review');
     } finally {
       setReviewSubmitting(false);
+    }
+  };
+  const openReportModal = () => {
+    if (!currentUser || !getStoredToken()) {
+      toast.error('Please sign in with a client account to report a provider.');
+      return;
+    }
+    if (!canCurrentUserReview) {
+      toast.error('Only client accounts can file provider complaints.');
+      return;
+    }
+    setShowReportModal(true);
+  };
+
+  const submitProviderReport = async (event) => {
+    event.preventDefault();
+    const details = reportForm.details.trim();
+    if (details.length < 20 || details.length > 1000) {
+      toast.error('Please provide 20 to 1000 characters of report details.');
+      return;
+    }
+    setReportSubmitting(true);
+    try {
+      await apiRequest(`/api/providers/${providerKey(provider)}/reports`, {
+        method: 'POST',
+        body: JSON.stringify({ category: reportForm.category, details }),
+      });
+      setShowReportModal(false);
+      setReportForm({ category: 'harassment', details: '' });
+      toast.success('Your report has been sent to the admin team for review.');
+    } catch (error) {
+      toast.error(error.message || 'Could not submit your report.');
+    } finally {
+      setReportSubmitting(false);
     }
   };
   const existingClientReview = useMemo(() => (
@@ -472,9 +554,9 @@ export default function NearMeProvider() {
               </div>
               <p className="font-medium text-xs text-bauhaus-ink/50 mt-1">Materials charged separately if needed</p>
 
-              <div className={`mt-4 flex items-center gap-2 px-3 py-2 border-2 border-bauhaus-ink ${provider.available ? 'bg-bauhaus-yellow' : 'bg-bauhaus-canvas'}`}>
-                <div className={`w-2 h-2 rounded-full ${provider.available ? 'bg-bauhaus-ink' : 'bg-bauhaus-ink/30'}`} />
-                <span className="font-bold text-xs uppercase tracking-wider text-bauhaus-ink">{provider.available ? 'Available Now' : 'Currently Busy'}</span>
+              <div className={`mt-4 flex items-center gap-2 px-3 py-2 border-2 border-bauhaus-ink ${provider.currentlyWorking ? 'bg-bauhaus-red text-white' : provider.available ? 'bg-bauhaus-yellow' : 'bg-bauhaus-canvas'}`}>
+                <div className={`w-2 h-2 rounded-full ${provider.currentlyWorking ? 'bg-white' : provider.available ? 'bg-bauhaus-ink' : 'bg-bauhaus-ink/30'}`} />
+                <span className={`font-bold text-xs uppercase tracking-wider ${provider.currentlyWorking ? 'text-white' : 'text-bauhaus-ink'}`}>{provider.currentlyWorking ? 'Currently Working' : provider.available ? 'Available Now' : 'Currently Busy'}</span>
               </div>
               <div className="mt-2 border-2 border-bauhaus-ink bg-bauhaus-canvas px-3 py-2">
                 <div className="font-black text-[10px] uppercase tracking-widest text-bauhaus-ink/50">Hireable Time Frame</div>
@@ -503,6 +585,9 @@ export default function NearMeProvider() {
                 <Link to={`/messages?provider=${providerKey(provider)}`} className="w-full flex items-center justify-center gap-2 px-6 py-3 bg-white text-bauhaus-ink font-bold uppercase text-sm tracking-wider border-2 border-bauhaus-ink shadow-[2px_2px_0px_0px_black] transition-all duration-200 hover:bg-bauhaus-canvas active:translate-x-[2px] active:translate-y-[2px] active:shadow-none">
                   <MessageCircle className="h-4 w-4" /> Message
                 </Link>
+                <button type="button" onClick={openReportModal} className="w-full flex items-center justify-center gap-2 px-6 py-3 bg-bauhaus-canvas text-bauhaus-red font-bold uppercase text-xs tracking-wider border-2 border-bauhaus-ink transition-colors hover:bg-white">
+                  <Flag className="h-4 w-4" /> Report Provider
+                </button>
               </div>
             </div>
 
@@ -528,6 +613,45 @@ export default function NearMeProvider() {
         providerName={provider.name || 'Provider'}
         onSubmit={sendInquiryRequest}
       />
+      {showReportModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-bauhaus-ink/70 p-4">
+          <form onSubmit={submitProviderReport} className="w-full max-w-lg border-4 border-bauhaus-ink bg-white shadow-bauhaus-lg">
+            <div className="flex items-start justify-between gap-3 border-b-4 border-bauhaus-ink bg-bauhaus-red px-5 py-4 text-white">
+              <div>
+                <div className="font-black text-lg uppercase tracking-tight">Report Provider</div>
+                <div className="font-medium text-xs text-white/75">Confidential complaint about {provider.name || 'this provider'}</div>
+              </div>
+              <button type="button" onClick={() => setShowReportModal(false)} className="border-2 border-white/70 p-2" aria-label="Close report form">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="space-y-4 p-5">
+              <label className="block">
+                <span className="font-black text-[10px] uppercase tracking-wider text-bauhaus-ink/55">Complaint Category</span>
+                <select value={reportForm.category} onChange={(event) => setReportForm((current) => ({ ...current, category: event.target.value }))} className="mt-1 w-full border-2 border-bauhaus-ink bg-bauhaus-canvas px-3 py-3 font-black text-xs uppercase outline-none">
+                  {reportCategories.map((category) => <option key={category.value} value={category.value}>{category.label}</option>)}
+                </select>
+              </label>
+              <label className="block">
+                <span className="font-black text-[10px] uppercase tracking-wider text-bauhaus-ink/55">Describe What Happened</span>
+                <textarea value={reportForm.details} onChange={(event) => setReportForm((current) => ({ ...current, details: event.target.value }))} rows={5} maxLength={1000} placeholder="Include useful details so the admin team can investigate." className="mt-1 w-full border-2 border-bauhaus-ink bg-white px-3 py-3 font-medium text-sm outline-none resize-none" />
+                <span className="mt-1 block font-bold text-[10px] text-bauhaus-ink/45">{reportForm.details.trim().length}/1000 characters</span>
+              </label>
+              <div className="border-2 border-bauhaus-ink bg-bauhaus-canvas p-3 font-medium text-xs text-bauhaus-ink/65">
+                Reports go to the admin team for investigation. Please use accurate information and include enough detail to evaluate the concern.
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 border-t-2 border-bauhaus-ink bg-bauhaus-canvas p-4">
+              <button type="button" onClick={() => setShowReportModal(false)} className="px-4 py-3 bg-white border-2 border-bauhaus-ink font-black text-xs uppercase tracking-wider">Cancel</button>
+              <button disabled={reportSubmitting} className="inline-flex items-center gap-2 px-5 py-3 bg-bauhaus-red text-white border-2 border-bauhaus-ink font-black text-xs uppercase tracking-wider disabled:opacity-60">
+                <Flag className="h-4 w-4" />
+                {reportSubmitting ? 'Submitting...' : 'Submit Report'}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+      <Toaster position="top-center" />
       <NearMeFooter />
     </div>
   );

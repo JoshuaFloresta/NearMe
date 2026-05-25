@@ -50,8 +50,7 @@ export default function NearMePayNow() {
     if (String(job?.status || '') !== 'Completed') return;
     localStorage.removeItem('nearme_active_cashless_job_id');
     setCashlessStarted(false);
-    navigate('/my-orders');
-  }, [job?.status, navigate]);
+  }, [job?.status]);
 
   useEffect(() => {
     if (!job?._id) return undefined;
@@ -160,7 +159,7 @@ export default function NearMePayNow() {
         {!loading && job && (
           <div className="space-y-5">
             <section className="border-4 border-bauhaus-ink bg-white p-5">
-              <div className="font-black text-lg uppercase tracking-tight text-bauhaus-ink">Pay Now</div>
+              <div className="font-black text-lg uppercase tracking-tight text-bauhaus-ink">{job.status === 'Completed' ? 'Leave a Review' : 'Pay Now'}</div>
               <div className="mt-1 font-bold text-xs uppercase tracking-wider text-bauhaus-ink/55">Job {job.jobNumber || String(job._id).slice(-8)}</div>
               <div className="mt-4 font-black text-2xl text-bauhaus-red">PHP {Number(job.financials?.grossPrice || 0).toLocaleString('en-PH')}</div>
             </section>

@@ -6,6 +6,7 @@ import PageNotFound from '@/lib/PageNotFound';
 import NearMeLanding from '@/pages/NearMeLanding';
 import NearMeAbout from '@/pages/NearMeAbout';
 import NearMeAuth from '@/pages/NearMeAuth';
+import NearMeForgotPassword from '@/pages/NearMeForgotPassword';
 import NearMeBrowse from '@/pages/NearMeBrowse';
 import NearMeProvider from '@/pages/NearMeProvider';
 import NearMeMessages from '@/pages/NearMeMessages';
@@ -32,6 +33,7 @@ function App() {
             <Route path="/about" element={<NearMeAbout />} />
             <Route path="/login" element={<NearMeAuth />} />
             <Route path="/signup" element={<NearMeAuth />} />
+            <Route path="/forgot-password" element={<NearMeForgotPassword />} />
             <Route path="/browse" element={<NearMeBrowse />} />
             <Route path="/provider/:id" element={<NearMeProvider />} />
             <Route path="/messages" element={<NearMeMessages />} />
@@ -45,6 +47,7 @@ function App() {
             <Route path="/provider-dashboard/bookings" element={<NearMeProviderDashboard focusSection="bookings" />} />
             <Route path="/provider-dashboard/chat-history" element={<NearMeProviderDashboard focusSection="chat-history" />} />
             <Route path="/provider-dashboard/pricing" element={<NearMeProviderDashboard focusSection="pricing" />} />
+            <Route path="/provider-dashboard/cashout" element={<NearMeProviderDashboard focusSection="cashout" />} />
             <Route path="/provider-dashboard/reviews" element={<NearMeProviderDashboard focusSection="reviews" />} />
             <Route path="/provider-dashboard/settings" element={<NearMeProviderDashboard focusSection="settings" />} />
             <Route path="/pay/:jobId" element={<NearMePayNow />} />
