@@ -1,43 +1,69 @@
+// Import Express to create a router and define HTTP handlers for provider-related endpoints.
 import express from 'express';
-import { ObjectId } from 'mongodb';
-import { getDB } from '../mongoConnect.js';
-import { addGeoLocation } from '../geo.js';
-import { isAdminRole, normalizeRole, requireAuth } from '../security.js';
 
+// Import ObjectId so we can validate and create MongoDB ObjectId instances when needed.
+import { ObjectId } from 'mongodb';
+
+// Import a helper to access the connected MongoDB instance from other modules.
+import { getDB } from '../mongoConnect.js';
+
+// Import geolocation helper used to create geoLocation fields from coordinates or location strings.
+import { addGeoLocation } from '../geo.js';
+import { isAdminRole, normalizeRole, requireAuth } from '../security.js'; 
+
+// Create an Express router instance to register specific routes for providers.
 const router = express.Router();
 
+// parseProviderId: accept either a numeric provider id or a MongoDB ObjectId string.
+// Returns a query object usable in MongoDB lookups, or null if the input is invalid.
 const parseProviderId = (id) => {
   const numericId = Number(id);
+  // If the value parses to an integer, query by numeric `id` field.
   if (Number.isInteger(numericId)) return { id: numericId };
+  // If the value is a valid ObjectId string, query by `_id` field.
   if (ObjectId.isValid(id)) return { _id: new ObjectId(id) };
+  // Otherwise return null so routes can return a 400 error for invalid ids.
   return null;
 };
 
+// toArray: normalize different input shapes into a trimmed array of strings.
+// - If already an array, cast items to strings, trim, and remove empty values.
+// - If a comma-separated string, split and trim each item.
+// - Otherwise return an empty array.
 const toArray = (value) => {
   if (Array.isArray(value)) return value.map((item) => String(item).trim()).filter(Boolean);
   if (typeof value === 'string') return value.split(',').map((item) => item.trim()).filter(Boolean);
   return [];
 };
 
+// numericOrDefault: coerce a value to a number, or return a fallback when invalid.
 const numericOrDefault = (value, fallback = 0) => {
   const number = Number(value);
   return Number.isFinite(number) ? number : fallback;
 };
+
+// toWeekdayList: normalize weekday-like input to an array of allowed short names.
 const toWeekdayList = (value) => {
   const raw = toArray(value).map((item) => String(item).toLowerCase());
   const allowed = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
   return raw.filter((item) => allowed.includes(item));
 };
+
+// sanitizeAvailabilityOverrides: validate and normalize an object of date->availability entries.
+// Expected input shape: { 'YYYY-MM-DD': { available: boolean, start: 'HH:MM', end: 'HH:MM' } }
 const sanitizeAvailabilityOverrides = (value) => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
   const result = {};
   Object.entries(value).forEach(([dateKey, entry]) => {
+    // Accept only keys that look like YYYY-MM-DD to avoid unexpected properties.
     const isDateKey = /^\d{4}-\d{2}-\d{2}$/.test(String(dateKey));
     if (!isDateKey || !entry || typeof entry !== 'object') return;
     const start = String(entry.start || '').trim();
     const end = String(entry.end || '').trim();
     result[dateKey] = {
+      // Default to true unless explicitly false.
       available: entry.available !== false,
+      // Provide sane defaults for start/end when missing.
       start: start || '08:00',
       end: end || '18:00',
     };
@@ -45,9 +71,12 @@ const sanitizeAvailabilityOverrides = (value) => {
   return result;
 };
 
+// publicProviderUpdate: builds a sanitized update object from a request body.
+// This function intentionally whitelists fields that may be updated by providers.
 const publicProviderUpdate = (body) => {
   const update = {};
 
+  // For each allowed field, check if it exists on the incoming body and normalize it.
   if (body.name !== undefined) update.name = String(body.name).trim();
   if (body.avatar !== undefined) update.avatar = body.avatar || '';
   if (body.service !== undefined) update.service = String(body.service).trim();
@@ -61,25 +90,35 @@ const publicProviderUpdate = (body) => {
   if (body.gallery !== undefined) update.gallery = toArray(body.gallery);
   if (body.available !== undefined) update.available = Boolean(body.available);
   if (body.availabilityDays !== undefined) update.availabilityDays = toWeekdayList(body.availabilityDays);
+
+  // Normalize working hours if both start and end are provided.
   if (body.workingHours !== undefined) {
     const start = String(body.workingHours?.start || '').trim();
     const end = String(body.workingHours?.end || '').trim();
     update.workingHours = (start && end) ? { start, end } : null;
   }
+
+  // Normalize availability overrides into an object keyed by dates.
   if (body.availabilityOverrides !== undefined) {
     update.availabilityOverrides = sanitizeAvailabilityOverrides(body.availabilityOverrides);
   }
+
+  // If coordinates are provided, validate numeric lat/lng and compute geoLocation for DB queries.
   if (body.coordinates !== undefined) {
     update.coordinates = body.coordinates && Number.isFinite(Number(body.coordinates.lat)) && Number.isFinite(Number(body.coordinates.lng))
       ? { lat: Number(body.coordinates.lat), lng: Number(body.coordinates.lng) }
       : null;
+    // addGeoLocation enriches the provider with a `geoLocation` object used for geospatial queries.
     update.geoLocation = addGeoLocation({ coordinates: update.coordinates }).geoLocation;
   }
 
+  // Track updated timestamp for auditing and sorting.
   update.updatedAt = new Date();
   return update;
 };
 
+// nextProviderId: compute the next numeric provider id by finding the current max numeric `id`.
+// This is used when providers use a numeric id in addition to MongoDB's _id.
 const nextProviderId = async () => {
   const latest = await getDB().collection('providers').find({ id: { $type: 'number' } }).sort({ id: -1 }).limit(1).next();
   return (latest?.id || 0) + 1;
@@ -153,34 +192,48 @@ const recalculateProviderReviewStats = async (provider) => {
   return { count: ratings.length, rating: avg };
 };
 
+// Route: GET /services
+// Returns the available service definitions used by the frontend to populate dropdowns.
 router.get('/services', async (req, res) => {
   try {
+    // Fetch all documents from `services` collection and sort alphabetically by label.
     const services = await getDB().collection('services').find().sort({ label: 1 }).toArray();
+    // Return the list to the frontend as JSON.
     res.json(services);
   } catch (error) {
+    // Send HTTP 500 with the error message when something goes wrong.
     res.status(500).json({ error: error.message });
   }
 });
 
+// Route: GET /providers/me
+// Returns the provider record associated with a given `userId` (creates one if missing).
+// - Requires authentication because users request their own provider profile.
 router.get('/providers/me', requireAuth, async (req, res) => {
   try {
     const userId = req.query.userId;
+    // Validate the query param exists; frontend should provide `userId`.
     if (!userId) return res.status(400).json({ error: 'userId is required' });
+    // If not admin, ensure the requesting user is the same as the requested userId.
     if (!isAdminRole(req.user.role) && String(req.user._id) !== String(userId)) {
       return res.status(403).json({ error: 'You can only access your own provider profile' });
     }
 
+    // Shortcuts to collections used in this route.
     const users = getDB().collection('users');
     const providers = getDB().collection('providers');
+    // Build a query for the user by _id; accept string or ObjectId forms.
     const userQuery = ObjectId.isValid(userId) ? { _id: new ObjectId(userId) } : { _id: userId };
     const user = await users.findOne(userQuery);
     if (!user) return res.status(404).json({ error: 'User not found' });
 
+    // Attempt to find a provider linked to this user by userId or email.
     let provider = await providers.findOne({ userId: String(user._id) });
     if (!provider) {
       provider = await providers.findOne({ email: user.email });
     }
 
+    // If no provider exists, create a default provider record and insert it.
     if (!provider) {
       const createdAt = new Date();
       const newProvider = addGeoLocation({
@@ -201,6 +254,7 @@ router.get('/providers/me', requireAuth, async (req, res) => {
         location: '',
         serviceArea: '',
         coordinates: null,
+        // Verified when the underlying user has providerStatus approved or a verified flag.
         verified: user.providerStatus === 'approved' || Boolean(user.verified),
         available: true,
         discoverable: true,
@@ -218,26 +272,33 @@ router.get('/providers/me', requireAuth, async (req, res) => {
       const result = await providers.insertOne(newProvider);
       provider = { ...newProvider, _id: result.insertedId };
     } else if (!provider.userId) {
+      // If an existing provider record has no linked userId, attach it now.
       await providers.updateOne({ _id: provider._id }, { $set: { userId: String(user._id), email: user.email, updatedAt: new Date() } });
       provider = { ...provider, userId: String(user._id), email: user.email };
     }
 
+    // Return the provider document to the frontend; useful when showing "My Provider Profile".
     res.json(provider);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
+// Route: GET /providers
+// Public endpoint to search and list providers. Supports filters like serviceId, availability, rates, and text search.
 router.get('/providers', async (req, res) => {
   try {
     const { search, serviceId, available, maxRate, minRating } = req.query;
+    // Base query excludes providers that have `discoverable = false` so admin-hidden ones are omitted.
     const query = { discoverable: { $ne: false } };
 
+    // Apply simple filters based on query params; these come from the frontend search UI.
     if (serviceId) query.serviceId = serviceId;
     if (available === 'true') query.available = true;
     if (maxRate) query.rate = { $lte: Number(maxRate) };
     if (minRating) query.rating = { $gte: Number(minRating) };
     if (search) {
+      // A basic text search across name, service, and location using case-insensitive regex.
       query.$or = [
         { name: { $regex: search, $options: 'i' } },
         { service: { $regex: search, $options: 'i' } },
@@ -245,6 +306,7 @@ router.get('/providers', async (req, res) => {
       ];
     }
 
+    // Sort by rating and jobs so higher-rated and busier providers surface first.
     const providers = await getDB().collection('providers').find(query).sort({ rating: -1, jobs: -1 }).toArray();
     const startingRateMap = await getStartingRateMap(providers);
     res.json(providers.map((provider) => withStartingRate(provider, startingRateMap)));
@@ -253,8 +315,11 @@ router.get('/providers', async (req, res) => {
   }
 });
 
+// Route: GET /reviews
+// Returns recent reviews (limited and sorted). Useful for admin/landing pages.
 router.get('/reviews', async (req, res) => {
   try {
+    // Limit the number of reviews returned (cap at 50 for performance).
     const limit = Math.min(Number(req.query.limit || 20), 50);
     const reviews = await getDB().collection('reviews').find().sort({ createdAt: -1 }).limit(limit).toArray();
     res.json(reviews);
@@ -263,6 +328,8 @@ router.get('/reviews', async (req, res) => {
   }
 });
 
+// Route: GET /providers/:id
+// Fetch a single provider by numeric id or MongoDB ObjectId.
 router.get('/providers/:id', async (req, res) => {
   try {
     const query = parseProviderId(req.params.id);
@@ -278,14 +345,19 @@ router.get('/providers/:id', async (req, res) => {
   }
 });
 
+// Route: POST /providers
+// Create a new provider record. Requires authentication since creation ties to the authenticated user.
 router.post('/providers', requireAuth, async (req, res) => {
   try {
+    // Destructure important fields from the request body; frontend must send these.
     const { name, service, serviceId, rate, location, coordinates, bio, tags, avatar } = req.body;
 
+    // Validate required fields; the frontend's provider creation form should enforce these too.
     if (!name || !service || !serviceId || !rate || !location) {
       return res.status(400).json({ error: 'name, service, serviceId, rate, and location are required' });
     }
 
+    // Build the provider object and compute geoLocation for spatial queries.
     const provider = addGeoLocation({
       name,
       userId: String(req.user._id),
@@ -318,6 +390,7 @@ router.post('/providers', requireAuth, async (req, res) => {
       updatedAt: new Date(),
     });
 
+    // Insert the new provider into the collection and return the created document.
     const result = await getDB().collection('providers').insertOne(provider);
     res.status(201).json({ ...provider, _id: result.insertedId });
   } catch (error) {
@@ -325,6 +398,8 @@ router.post('/providers', requireAuth, async (req, res) => {
   }
 });
 
+// Route: PATCH /providers/:id
+// Update a provider document. Requires authentication and either admin role or ownership.
 router.patch('/providers/:id', requireAuth, async (req, res) => {
   try {
     const query = parseProviderId(req.params.id);
@@ -333,11 +408,13 @@ router.patch('/providers/:id', requireAuth, async (req, res) => {
     const existingProvider = await getDB().collection('providers').findOne(query);
     if (!existingProvider) return res.status(404).json({ error: 'Provider not found' });
 
+    // Only admins or the provider owner (matching userId) may update.
     const canUpdate = isAdminRole(req.user.role) || String(existingProvider.userId || '') === String(req.user._id);
     if (!canUpdate) {
       return res.status(403).json({ error: 'You can only update your own provider profile' });
     }
 
+    // Build the sanitized update object from the request body.
     const update = publicProviderUpdate(req.body);
     const result = await getDB().collection('providers').findOneAndUpdate(
       query,
@@ -345,6 +422,7 @@ router.patch('/providers/:id', requireAuth, async (req, res) => {
       { returnDocument: 'after' }
     );
 
+    // If the provider changed their avatar and they own the provider record, sync avatar to users collection.
     if (req.body.avatar !== undefined && String(existingProvider.userId || '') === String(req.user._id)) {
       await getDB().collection('users').updateOne(
         { _id: req.user._id },
@@ -352,16 +430,20 @@ router.patch('/providers/:id', requireAuth, async (req, res) => {
       );
     }
 
+    // Return the updated provider document (wrapped by findOneAndUpdate result).
     res.json(result);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
+// Route: GET /providers/:id/reviews
+// Fetch reviews for a provider. Accepts either numeric id or string/ObjectId id.
 router.get('/providers/:id/reviews', async (req, res) => {
   try {
     const numericId = Number(req.params.id);
     const providerId = Number.isInteger(numericId) ? numericId : req.params.id;
+    // Query reviews where providerId matches either numeric or string form to support legacy data.
     const reviews = await getDB().collection('reviews').find({
       $or: [
         { providerId },
@@ -374,6 +456,8 @@ router.get('/providers/:id/reviews', async (req, res) => {
   }
 });
 
+// Route: POST /providers/:id/reviews
+// Create a review for a provider. Requires authentication and validates rating/text.
 router.post('/providers/:id/reviews', requireAuth, async (req, res) => {
   try {
     const query = parseProviderId(req.params.id);
@@ -387,6 +471,7 @@ router.post('/providers/:id/reviews', requireAuth, async (req, res) => {
     const provider = await getDB().collection('providers').findOne(query);
     if (!provider) return res.status(404).json({ error: 'Provider not found' });
 
+    // Validate rating and text length to avoid spam/invalid reviews.
     const rating = Number(req.body?.rating);
     const text = String(req.body?.text || '').trim();
     if (!Number.isInteger(rating) || rating < 1 || rating > 5) {
@@ -396,8 +481,7 @@ router.post('/providers/:id/reviews', requireAuth, async (req, res) => {
       return res.status(400).json({ error: 'Review text must be 10 to 500 characters' });
     }
 
-    const now = new Date();
-    const reviewPayload = {
+    const review = {
       providerId: provider.id ?? String(provider._id),
       providerUserId: provider.userId ? String(provider.userId) : null,
       customerUserId: String(req.user._id),
@@ -405,48 +489,27 @@ router.post('/providers/:id/reviews', requireAuth, async (req, res) => {
       rating,
       text,
       status: 'published',
-      updatedAt: now,
+      createdAt: new Date(),
+      updatedAt: new Date(),
     };
-    const reviewQuery = {
-      providerId: { $in: providerReviewIdCandidates(provider) },
-      customerUserId: String(req.user._id),
-      status: { $ne: 'deleted' },
-    };
-    const existing = await getDB().collection('reviews').findOne(reviewQuery);
 
-    let savedReview;
-    let created = false;
-    if (existing) {
-      await getDB().collection('reviews').updateOne(
-        { _id: existing._id },
-        { $set: reviewPayload }
-      );
-      savedReview = { ...existing, ...reviewPayload, _id: existing._id };
-    } else {
-      const review = { ...reviewPayload, createdAt: now };
-      const result = await getDB().collection('reviews').insertOne(review);
-      savedReview = { ...review, _id: result.insertedId };
-      created = true;
-    }
+    const result = await getDB().collection('reviews').insertOne(review);
 
-    const nextStats = await recalculateProviderReviewStats(provider);
+    const currentReviews = Number(provider.reviews || 0);
+    const currentRating = Number(provider.rating || 0);
+    const nextReviews = currentReviews + 1;
+    const nextRating = Math.round((((currentRating * currentReviews) + rating) / nextReviews) * 10) / 10;
+
     await getDB().collection('providers').updateOne(
       { _id: provider._id },
       { $set: { reviews: nextStats.count, rating: nextStats.rating, updatedAt: new Date() } }
     );
 
-    res.status(created ? 201 : 200).json({
-      review: savedReview,
-      provider: {
-        id: provider.id ?? String(provider._id),
-        reviews: nextStats.count,
-        rating: nextStats.rating,
-      },
-      created,
-    });
+    res.status(201).json({ ...review, _id: result.insertedId });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
+// Export the router so the main server can mount these routes under a path like `/api`.
 export default router;
