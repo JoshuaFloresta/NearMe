@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Camera, Save, User, Mail, Phone, ChevronLeft } from 'lucide-react';
+import { Camera, Save, User, Mail, Phone, ChevronLeft, ShieldCheck } from 'lucide-react';
 import { toast, Toaster } from 'sonner';
 import NearMeNav from '../components/nearme/NearMeNav';
 import NearMeFooter from '../components/nearme/NearMeFooter';
@@ -144,20 +144,20 @@ export default function NearMeSettings() {
     <div className="min-h-screen bg-bauhaus-canvas font-outfit">
       <NearMeNav />
 
-      <main className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-8 sm:py-10">
+      <main className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8 sm:py-10">
         <Link to="/" className="inline-flex items-center gap-1 font-bold text-xs uppercase tracking-wider text-bauhaus-ink/50 hover:text-bauhaus-red transition-colors">
           <ChevronLeft className="h-4 w-4" />
           Back Home
         </Link>
 
         <div className="mt-5 border-b-4 border-bauhaus-ink pb-4">
-          <h1 className="font-black text-2xl sm:text-3xl uppercase tracking-tighter text-bauhaus-ink">Settings</h1>
-          <p className="mt-1 font-medium text-sm text-bauhaus-ink/50">Manage your account details and profile image.</p>
+          <h1 className="font-black text-2xl sm:text-3xl uppercase tracking-tighter text-bauhaus-ink">My Profile</h1>
+          <p className="mt-1 font-medium text-sm text-bauhaus-ink/50">Manage your profile, contact details, and account quick actions.</p>
         </div>
 
-        <form onSubmit={handleSubmit} className="mt-8 grid grid-cols-1 lg:grid-cols-[280px_1fr] gap-8">
+        <form onSubmit={handleSubmit} className="mt-8 grid grid-cols-1 lg:grid-cols-[320px_1fr] gap-8">
           <section className="bg-white border-4 border-bauhaus-ink shadow-bauhaus-lg p-6 h-fit">
-            <div className="font-black text-sm uppercase tracking-tight text-bauhaus-ink mb-4">Profile Image</div>
+            <div className="font-black text-sm uppercase tracking-tight text-bauhaus-ink mb-4">Profile Card</div>
             <div className="flex flex-col items-center text-center">
               <div className="w-36 h-36 border-4 border-bauhaus-ink bg-bauhaus-yellow overflow-hidden flex items-center justify-center">
                 {form.avatar ? (
@@ -171,11 +171,22 @@ export default function NearMeSettings() {
                 {uploadingAvatar ? 'Uploading...' : 'Change Image'}
                 <input type="file" accept="image/*" onChange={handleImageChange} className="sr-only" />
               </label>
+              <div className="mt-4 w-full border-2 border-bauhaus-ink bg-bauhaus-canvas p-3 text-left">
+                <div className="font-black text-[10px] uppercase tracking-wider text-bauhaus-ink/55">Display Name</div>
+                <div className="mt-1 font-black text-sm uppercase tracking-tight text-bauhaus-ink">{displayName}</div>
+                <div className="mt-2 font-bold text-[10px] uppercase tracking-wider text-bauhaus-ink/45 truncate">{form.email || 'No email set'}</div>
+              </div>
             </div>
           </section>
 
           <section className="bg-white border-4 border-bauhaus-ink shadow-bauhaus-lg p-6 sm:p-8">
-            <div className="font-black text-sm uppercase tracking-tight text-bauhaus-ink mb-5">Account Info</div>
+            <div className="flex items-center justify-between gap-3 mb-5">
+              <div className="font-black text-sm uppercase tracking-tight text-bauhaus-ink">Account Details</div>
+              <span className="inline-flex items-center gap-1 px-2 py-1 bg-bauhaus-yellow border-2 border-bauhaus-ink font-black text-[9px] uppercase tracking-wider text-bauhaus-ink">
+                <ShieldCheck className="h-3.5 w-3.5" />
+                Verified Account
+              </span>
+            </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>

@@ -277,8 +277,14 @@ router.patch('/users/:id', async (req, res) => {
 
 router.get('/admin/users', requireAdmin, async (req, res) => {
   try {
+    const activeUsersQuery = {
+      $and: [
+        { isDeleted: { $ne: true } },
+        { deletedAt: { $exists: false } },
+      ],
+    };
     const users = await getDB().collection('users')
-      .find({}, { projection: { password: 0 } })
+      .find(activeUsersQuery, { projection: { password: 0 } })
       .sort({ createdAt: -1 })
       .toArray();
 

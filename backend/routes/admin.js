@@ -129,8 +129,38 @@ router.get('/stats', async (req, res) => {
 
 router.get('/providers', async (req, res) => {
   try {
-    const providers = await getDB().collection('providers').find().sort({ createdAt: -1, rating: -1 }).toArray();
-    res.json(providers);
+    const db = getDB();
+    const providers = await db.collection('providers').find().sort({ createdAt: -1, rating: -1 }).toArray();
+    const linkedUserIds = [...new Set(
+      providers
+        .map((provider) => String(provider?.userId || '').trim())
+        .filter(Boolean)
+    )];
+    const linkedObjectIds = linkedUserIds
+      .filter((id) => ObjectId.isValid(id))
+      .map((id) => new ObjectId(id));
+
+    const activeUsers = linkedObjectIds.length > 0
+      ? await db.collection('users').find(
+        {
+          _id: { $in: linkedObjectIds },
+          isDeleted: { $ne: true },
+          deletedAt: { $exists: false },
+        },
+        { projection: { _id: 1 } }
+      ).toArray()
+      : [];
+    const activeUserIdSet = new Set(activeUsers.map((user) => String(user._id)));
+
+    const visibleProviders = providers.filter((provider) => {
+      if (provider.isDeleted === true) return false;
+      if (provider.deletedAt) return false;
+      const providerUserId = String(provider?.userId || '').trim();
+      if (!providerUserId) return true;
+      return activeUserIdSet.has(providerUserId);
+    });
+
+    res.json(visibleProviders);
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }

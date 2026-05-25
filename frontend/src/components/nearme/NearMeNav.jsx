@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
-import { Menu, X, MapPin, Bell, Settings, LogOut, ShieldCheck, LayoutDashboard } from 'lucide-react';
+import { Menu, X, MapPin, Bell, Settings, LogOut, ShieldCheck, LayoutDashboard, Briefcase } from 'lucide-react';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -323,6 +323,12 @@ export default function NearMeNav({ user: userProp, onLogout }) {
                           <Link to="/settings" className="flex items-center gap-2">
                             <Settings className="h-4 w-4" />
                             Settings
+                          </Link>
+                        </DropdownMenuItem>
+                        <DropdownMenuItem asChild className="cursor-pointer rounded-none font-bold text-xs uppercase tracking-wider focus:bg-bauhaus-canvas">
+                          <Link to="/my-orders" className="flex items-center gap-2">
+                            <Briefcase className="h-4 w-4" />
+                            My Order
                           </Link>
                         </DropdownMenuItem>
                         {user.role === 'provider' && (

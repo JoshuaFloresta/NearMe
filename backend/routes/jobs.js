@@ -1,5 +1,6 @@
 import express from 'express';
 import { ObjectId } from 'mongodb';
+import crypto from 'crypto';
 import { getDB } from '../mongoConnect.js';
 import { emitAlertToRole, emitAlertToUsers } from '../realtime.js';
 import { isAdminRole, requireAuth } from '../security.js';
@@ -25,8 +26,18 @@ const toNumber = (value, fallback = 0) => {
   return Number.isFinite(number) ? number : fallback;
 };
 const round2 = (value) => Math.round(Number(value || 0) * 100) / 100;
+const toCentavos = (value) => Math.round(Number(value || 0) * 100);
 const bookedStates = [STATES.ACCEPTED, STATES.IN_PROGRESS, STATES.PENDING_PAYMENT, STATES.PENDING_VERIFICATION];
 const weekdayKeys = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+const payMongoCheckoutMethods = () => {
+  const configured = String(process.env.PAYMONGO_PAYMENT_METHOD_TYPES || 'qrph,gcash,paymaya,card')
+    .split(',')
+    .map((value) => value.trim().toLowerCase())
+    .filter(Boolean);
+
+  // QR Ph is PayMongo's baseline online option; keep checkout usable on accounts without approved e-wallet/card channels.
+  return [...new Set(['qrph', ...configured])];
+};
 const parseHHMMToMinutes = (value, fallback) => {
   const [h, m] = String(value || fallback || '00:00').split(':').map((item) => Number(item || 0));
   return (h * 60) + m;
@@ -108,7 +119,11 @@ const finalizeCompletion = async ({ job, paymentMethod, verifiedByAdminId = null
       platformFeeAmount: platformFee,
       providerNetPayout: providerNet,
       paymentMethod,
-      paymentStatus: paymentMethod === 'qr' ? 'verified' : 'confirmed_cash',
+      paymentStatus: paymentMethod === 'qr'
+        ? 'verified'
+        : paymentMethod === 'cashless'
+          ? 'paid'
+          : 'confirmed_cash',
     },
     payment: {
       ...(job.payment || {}),
@@ -119,10 +134,11 @@ const finalizeCompletion = async ({ job, paymentMethod, verifiedByAdminId = null
     workflow: addJobEvent(job.workflow, STATES.COMPLETED, verifiedByAdminId || 'system', paymentMethod === 'qr' ? 'admin' : 'system', `${paymentMethod} completion`),
   };
 
-  await db.collection('jobs_ledger').updateOne(
+  const completionUpdate = await db.collection('jobs_ledger').updateOne(
     { _id: job._id, status: job.status },
     { $set: jobUpdate }
   );
+  if (completionUpdate.modifiedCount !== 1) return false;
 
   await db.collection('providers').updateOne(
     { userId: String(job.providerUserId) },
@@ -156,6 +172,8 @@ const finalizeCompletion = async ({ job, paymentMethod, verifiedByAdminId = null
     },
     { upsert: true }
   );
+
+  return true;
 };
 
 router.get('/v1/jobs', requireAuth, async (req, res) => {
@@ -257,6 +275,10 @@ const acceptInquiryHandler = async (req, res) => {
       conversationId = null,
       inquiryMessageId = null,
       inquiryPayload = null,
+      quotedPrice = null,
+      quoteBreakdown = '',
+      quoteInclusions = [],
+      quoteDescription = '',
     } = req.body || {};
 
     if (!providerId || !bookingDate || !bookingTime || !address) {
@@ -353,9 +375,22 @@ const acceptInquiryHandler = async (req, res) => {
     const client = clientObjectId
       ? await getDB().collection('users').findOne({ _id: clientObjectId })
       : null;
+    const clientName = String(
+      client?.name
+      || [client?.fname, client?.lname].filter(Boolean).join(' ')
+      || ''
+    ).trim();
 
     const now = new Date();
-    const grossPrice = round2(provider.rate || 0);
+    const normalizedQuotedPrice = Number.isFinite(Number(quotedPrice)) && Number(quotedPrice) > 0
+      ? round2(quotedPrice)
+      : null;
+    const grossPrice = normalizedQuotedPrice ?? round2(provider.rate || 0);
+    const normalizedInclusions = Array.isArray(quoteInclusions)
+      ? quoteInclusions.map((line) => String(line || '').trim()).filter(Boolean)
+      : [];
+    const normalizedBreakdown = String(quoteBreakdown || '').trim();
+    const normalizedQuoteDescription = String(quoteDescription || '').trim();
     const jobNumber = `NM-${now.getUTCFullYear()}-${Math.floor(Date.now() / 1000).toString().slice(-8)}`;
     const resolvedProviderUserId = String(provider.userId || req.user._id || '').trim();
     const createdJob = {
@@ -363,6 +398,7 @@ const acceptInquiryHandler = async (req, res) => {
       serviceId: String(serviceCategory || provider.serviceId || 'other'),
       packageId: null,
       clientUserId: String(resolvedClientUserId),
+      clientName: clientName || 'Customer',
       clientEmail: client?.email || '',
       providerId: provider.id ?? null,
       providerObjectId: String(provider._id),
@@ -385,6 +421,10 @@ const acceptInquiryHandler = async (req, res) => {
       quote: {
         grossPrice,
         currency: 'PHP',
+        source: normalizedQuotedPrice ? 'custom' : 'default',
+        breakdown: normalizedBreakdown || '',
+        inclusions: normalizedInclusions,
+        description: normalizedQuoteDescription || '',
       },
       financials: {
         currency: 'PHP',
@@ -648,6 +688,440 @@ router.patch('/v1/jobs/:id/payment/cash-confirm', requireAuth, async (req, res) 
   }
 });
 
+router.post('/v1/jobs/:id/payment/cashless-checkout', requireAuth, async (req, res) => {
+  try {
+    const id = parseObjectId(req.params.id);
+    if (!id) return res.status(400).json({ error: 'Invalid job id' });
+    const job = await getDB().collection('jobs_ledger').findOne({ _id: id });
+    if (!job) return res.status(404).json({ error: 'Job not found' });
+    if (job.status !== STATES.PENDING_PAYMENT) {
+      return res.status(409).json({ error: `Invalid transition from ${job.status}` });
+    }
+    if (!isClientActor(job, req.user) && !isAdminRole(req.user.role)) {
+      return res.status(403).json({ error: 'Only the client can start cashless checkout' });
+    }
+
+    const amountCentavos = toCentavos(job.financials?.grossPrice || 0);
+    if (amountCentavos <= 0) return res.status(400).json({ error: 'Invalid job amount' });
+
+    const frontendBase = String(
+      process.env.FRONTEND_URL
+      || process.env.CLIENT_ORIGIN?.split(',')?.[0]
+      || 'http://localhost:5173'
+    ).trim().replace(/\/+$/, '');
+    const secretKey = String(process.env.PAYMONGO_SECRET_KEY || '').trim();
+    if (!secretKey) {
+      return res.status(503).json({ error: 'PAYMONGO_SECRET_KEY is required for tracked cashless payments' });
+    }
+    const nearmeJobId = String(job._id);
+    const nearmeRef = String(job.jobNumber || job._id);
+    const auth = Buffer.from(`${secretKey}:`).toString('base64');
+    const checkoutPayload = {
+      data: {
+        attributes: {
+          billing: {
+            name: String(req.user?.name || req.user?.fname || req.user?.email || 'NearMe Customer'),
+            email: String(req.user?.email || ''),
+          },
+          send_email_receipt: true,
+          show_description: true,
+          show_line_items: true,
+          description: `NearMe payment for ${nearmeRef}`,
+          reference_number: nearmeRef,
+          payment_method_types: payMongoCheckoutMethods(),
+          currency: 'PHP',
+          line_items: [
+            {
+              currency: 'PHP',
+              amount: amountCentavos,
+              name: `NearMe Service ${nearmeRef}`,
+              quantity: 1,
+            },
+          ],
+          metadata: {
+            nearmeJobId,
+            nearmeRef,
+          },
+          success_url: `${frontendBase}/my-orders?cashless=success&jobId=${encodeURIComponent(nearmeJobId)}`,
+          cancel_url: `${frontendBase}/my-orders?cashless=cancel&jobId=${encodeURIComponent(nearmeJobId)}`,
+        },
+      },
+    };
+
+    const pmResponse = await fetch('https://api.paymongo.com/v1/checkout_sessions', {
+      method: 'POST',
+      headers: {
+        Authorization: `Basic ${auth}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(checkoutPayload),
+    });
+    const pmJson = await pmResponse.json().catch(() => ({}));
+    if (!pmResponse.ok) {
+      const apiError = pmJson?.errors?.[0]?.detail || pmJson?.errors?.[0]?.code || 'PayMongo checkout creation failed';
+      throw new Error(apiError);
+    }
+
+    const checkoutUrl = String(pmJson?.data?.attributes?.checkout_url || '').trim();
+    const checkoutSessionId = String(pmJson?.data?.id || '').trim();
+    if (!checkoutUrl || !checkoutSessionId) throw new Error('PayMongo checkout session details missing');
+
+    await getDB().collection('jobs_ledger').updateOne(
+      { _id: id },
+      {
+        $set: {
+          'payment.cashless.checkoutUrl': checkoutUrl,
+          'payment.cashless.checkoutSessionId': checkoutSessionId || null,
+          'payment.cashless.createdAt': new Date(),
+          'payment.cashless.state': 'initiated',
+          'payment.cashless.referenceNumber': nearmeRef,
+        },
+      }
+    );
+
+    res.json({ checkoutUrl, checkoutSessionId, mode: 'checkout_session' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.post('/v1/payments/paymongo/webhook', async (req, res) => {
+  try {
+    const configuredToken = String(process.env.PAYMONGO_WEBHOOK_TOKEN || '').trim();
+    if (configuredToken) {
+      const headerToken = String(req.headers['x-nearme-webhook-token'] || '');
+      const queryToken = String(req.query?.token || '');
+      if (headerToken !== configuredToken && queryToken !== configuredToken) {
+        return res.status(401).json({ error: 'Invalid webhook token' });
+      }
+    }
+
+    const payload = req.body && typeof req.body === 'object' ? req.body : {};
+    const eventId = String(payload?.data?.id || payload?.id || crypto.randomUUID());
+    const eventType = String(payload?.data?.attributes?.type || payload?.type || '').toLowerCase();
+    const eventData = payload?.data?.attributes?.data || {};
+    const eventDataAttributes = eventData?.attributes || {};
+    const eventDataId = String(eventData?.id || eventDataAttributes?.id || '').trim();
+    const attributes = eventDataAttributes
+      || payload?.data?.attributes?.attributes
+      || payload?.data?.attributes
+      || {};
+    const metadata = attributes?.metadata || {};
+    const paidAmountCentavos = Number(
+      attributes?.amount
+      || attributes?.amount_paid
+      || attributes?.net_amount
+      || eventDataAttributes?.payments?.[0]?.attributes?.amount
+      || eventDataAttributes?.payments?.[0]?.attributes?.amount_paid
+      || eventDataAttributes?.payments?.[0]?.attributes?.net_amount
+      || 0
+    );
+
+    await getDB().collection('payment_webhook_logs').updateOne(
+      { provider: 'paymongo', eventId },
+      {
+        $setOnInsert: {
+          provider: 'paymongo',
+          eventId,
+          eventType,
+          createdAt: new Date(),
+          payload,
+        },
+      },
+      { upsert: true }
+    );
+
+    const looksPaidEvent = [
+      'payment.paid',
+      'link.payment.paid',
+      'checkout_session.payment.paid',
+    ].includes(eventType) || eventType.endsWith('.payment.paid');
+    if (!looksPaidEvent) return res.json({ received: true, skipped: true });
+
+    const nearmeJobId = String(
+      metadata?.nearmeJobId
+      || attributes?.metadata?.nearmeJobId
+      || eventDataAttributes?.metadata?.nearmeJobId
+      || ''
+    ).trim();
+    let job = null;
+    if (nearmeJobId && ObjectId.isValid(nearmeJobId)) {
+      job = await getDB().collection('jobs_ledger').findOne({ _id: new ObjectId(nearmeJobId) });
+    }
+    if (!job && eventDataId) {
+      job = await getDB().collection('jobs_ledger').findOne({ 'payment.cashless.checkoutSessionId': eventDataId });
+    }
+    if (!job && paidAmountCentavos > 0) {
+      // Fallback for hosted payment links where job metadata may not be present in webhook payload.
+      const fallbackCandidates = await getDB().collection('jobs_ledger').find({
+        status: STATES.PENDING_PAYMENT,
+        'financials.grossPrice': round2(paidAmountCentavos / 100),
+        'payment.cashless.state': 'initiated',
+      }).sort({ 'payment.cashless.createdAt': -1, createdAt: -1 }).limit(5).toArray();
+      job = fallbackCandidates[0] || null;
+    }
+    if (!job) {
+      return res.json({ received: true, skipped: true, reason: 'job_not_resolved' });
+    }
+    if (job.status === STATES.COMPLETED) return res.json({ received: true, skipped: true, reason: 'already_completed' });
+    if (job.status !== STATES.PENDING_PAYMENT) return res.json({ received: true, skipped: true, reason: 'job_not_pending_payment' });
+
+    const expectedCentavos = toCentavos(job.financials?.grossPrice || 0);
+    if (paidAmountCentavos > 0 && paidAmountCentavos !== expectedCentavos) {
+      return res.json({ received: true, skipped: true, reason: 'amount_mismatch' });
+    }
+
+    const completedNow = await finalizeCompletion({ job, paymentMethod: 'cashless' });
+    await getDB().collection('jobs_ledger').updateOne(
+      { _id: job._id },
+      { $set: { 'payment.cashless.state': 'paid_webhook', 'payment.cashless.webhookEventId': eventId } }
+    );
+    const completed = await getDB().collection('jobs_ledger').findOne({ _id: job._id });
+    emitAlertToUsers([completed.clientUserId, completed.providerUserId], 'job:completed', completed);
+    emitAlertToRole('admin', 'job:completed', completed);
+    return res.json({ received: true, completed: true, newlyCompleted: completedNow, jobId: nearmeJobId || String(job._id) });
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+router.post('/v1/jobs/:id/payment/cashless-sync', requireAuth, async (req, res) => {
+  try {
+    const id = parseObjectId(req.params.id);
+    if (!id) return res.status(400).json({ error: 'Invalid job id' });
+
+    const job = await getDB().collection('jobs_ledger').findOne({ _id: id });
+    if (!job) return res.status(404).json({ error: 'Job not found' });
+    if (!isParticipantOrAdmin(job, req.user)) return res.status(403).json({ error: 'Access denied' });
+
+    if (job.status === STATES.COMPLETED) {
+      return res.json({ synced: true, alreadyCompleted: true, job });
+    }
+    if (job.status !== STATES.PENDING_PAYMENT) {
+      return res.status(409).json({ error: `Invalid transition from ${job.status}` });
+    }
+
+    const secretKey = String(process.env.PAYMONGO_SECRET_KEY || '').trim();
+    if (!secretKey) {
+      return res.status(503).json({ error: 'PAYMONGO_SECRET_KEY is not configured' });
+    }
+
+    const auth = Buffer.from(`${secretKey}:`).toString('base64');
+    const checkoutSessionId = String(job?.payment?.cashless?.checkoutSessionId || '').trim();
+    let isPaid = false;
+    let paymentStatuses = [];
+    let checkoutSessionStatus = '';
+    let matchSource = '';
+
+    if (checkoutSessionId) {
+      const pmResponse = await fetch(`https://api.paymongo.com/v1/checkout_sessions/${encodeURIComponent(checkoutSessionId)}`, {
+        method: 'GET',
+        headers: {
+          Authorization: `Basic ${auth}`,
+          'Content-Type': 'application/json',
+        },
+      });
+      const pmJson = await pmResponse.json().catch(() => ({}));
+      if (!pmResponse.ok) {
+        const apiError = pmJson?.errors?.[0]?.detail || pmJson?.errors?.[0]?.code || 'PayMongo status check failed';
+        return res.status(502).json({ error: apiError });
+      }
+
+      const attrs = pmJson?.data?.attributes || {};
+      const payments = Array.isArray(attrs?.payments) ? attrs.payments : [];
+      paymentStatuses = payments.map((item) => String(item?.attributes?.status || '').toLowerCase()).filter(Boolean);
+      const paidByPayment = paymentStatuses.some((status) => ['paid', 'succeeded', 'successful'].includes(status));
+      const paidBySession = ['paid', 'succeeded', 'successful'].includes(String(attrs?.payment_status || attrs?.status || '').toLowerCase());
+      const paidByTimestamp = Boolean(attrs?.paid_at) || payments.some((item) => Boolean(item?.attributes?.paid_at));
+      isPaid = paidByPayment || paidBySession || paidByTimestamp;
+      checkoutSessionStatus = String(attrs?.payment_status || attrs?.status || '');
+      if (!checkoutSessionStatus && paidByTimestamp) checkoutSessionStatus = 'paid';
+      matchSource = 'checkout_session';
+    } else {
+      // Hosted payment-link fallback: look for a recent paid payment matching this job's amount and customer details.
+      const expectedCentavos = toCentavos(job.financials?.grossPrice || 0);
+      const clientEmail = String(job.clientEmail || req.user?.email || '').trim().toLowerCase();
+      const startedAt = new Date(job?.payment?.cashless?.createdAt || job.pendingPaymentAt || job.updatedAt || job.createdAt || 0).getTime();
+      const pmResponse = await fetch('https://api.paymongo.com/v1/payments?limit=30', {
+        method: 'GET',
+        headers: {
+          Authorization: `Basic ${auth}`,
+          'Content-Type': 'application/json',
+        },
+      });
+      const pmJson = await pmResponse.json().catch(() => ({}));
+      if (!pmResponse.ok) {
+        const apiError = pmJson?.errors?.[0]?.detail || pmJson?.errors?.[0]?.code || 'PayMongo payments list failed';
+        return res.status(502).json({ error: apiError });
+      }
+      const payments = Array.isArray(pmJson?.data) ? pmJson.data : [];
+      const match = payments.find((item) => {
+        const attrs = item?.attributes || {};
+        const amount = Number(attrs?.amount || 0);
+        const status = String(attrs?.status || '').toLowerCase();
+        const email = String(attrs?.billing?.email || '').trim().toLowerCase();
+        const paidAtMs = new Date(attrs?.paid_at || attrs?.created_at || 0).getTime();
+        const withinWindow = Number.isFinite(paidAtMs) && paidAtMs >= startedAt - 10 * 60 * 1000;
+        const emailMatch = clientEmail ? email === clientEmail : true;
+        return amount === expectedCentavos && ['paid', 'succeeded', 'successful'].includes(status) && emailMatch && withinWindow;
+      });
+      if (match) {
+        isPaid = true;
+        paymentStatuses = [String(match?.attributes?.status || '').toLowerCase()];
+        checkoutSessionStatus = 'paid';
+        matchSource = 'payments_list_fallback';
+      }
+    }
+
+    await getDB().collection('jobs_ledger').updateOne(
+      { _id: id },
+      {
+        $set: {
+          'payment.cashless.lastPolledAt': new Date(),
+          'payment.cashless.lastPolledStatus': checkoutSessionStatus || 'unknown',
+          'payment.cashless.lastMatchSource': matchSource || 'none',
+        },
+      }
+    );
+
+    if (!isPaid) {
+      return res.json({
+        synced: false,
+        pending: true,
+        reason: 'not_paid_yet',
+        paymentStatuses,
+        checkoutSessionStatus,
+      });
+    }
+
+    await finalizeCompletion({ job, paymentMethod: 'cashless' });
+    await getDB().collection('jobs_ledger').updateOne(
+      { _id: id },
+      {
+        $set: {
+          'payment.cashless.state': 'paid_api_poll',
+          'payment.cashless.polledPaidAt': new Date(),
+          'payment.cashless.polledCheckoutSessionId': checkoutSessionId,
+        },
+      }
+    );
+    const completed = await getDB().collection('jobs_ledger').findOne({ _id: id });
+    emitAlertToUsers([completed.clientUserId, completed.providerUserId], 'job:completed', completed);
+    emitAlertToRole('admin', 'job:completed', completed);
+    return res.json({ synced: true, completed: true, job: completed });
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+router.get('/v1/admin/payments/paymongo/debug', requireAuth, async (req, res) => {
+  try {
+    if (!isAdminRole(req.user?.role)) {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
+
+    const limitRaw = Number(req.query?.limit || 20);
+    const limit = Math.max(1, Math.min(100, Number.isFinite(limitRaw) ? limitRaw : 20));
+    const eventTypeQuery = String(req.query?.eventType || '').trim().toLowerCase();
+    const jobIdQuery = String(req.query?.jobId || '').trim();
+
+    const logs = await getDB().collection('payment_webhook_logs')
+      .find({ provider: 'paymongo' })
+      .sort({ createdAt: -1 })
+      .limit(200)
+      .toArray();
+
+    const transformed = logs
+      .map((log) => {
+        const payload = log?.payload || {};
+        const eventType = String(payload?.data?.attributes?.type || payload?.type || log?.eventType || '').toLowerCase();
+        const eventData = payload?.data?.attributes?.data || {};
+        const eventDataAttrs = eventData?.attributes || {};
+        const eventDataId = String(eventData?.id || eventDataAttrs?.id || '').trim();
+        const metadata = eventDataAttrs?.metadata || payload?.data?.attributes?.metadata || {};
+        const nearmeJobId = String(metadata?.nearmeJobId || '').trim();
+        const paidAmountCentavos = Number(
+          eventDataAttrs?.amount
+          || eventDataAttrs?.amount_paid
+          || eventDataAttrs?.net_amount
+          || eventDataAttrs?.payments?.[0]?.attributes?.amount
+          || eventDataAttrs?.payments?.[0]?.attributes?.amount_paid
+          || eventDataAttrs?.payments?.[0]?.attributes?.net_amount
+          || 0
+        );
+        const paidAmountPhp = round2(paidAmountCentavos / 100);
+        return {
+          eventId: String(log?.eventId || ''),
+          eventType,
+          eventDataId,
+          createdAt: log?.createdAt || null,
+          nearmeJobId,
+          nearmeRef: String(metadata?.nearmeRef || eventDataAttrs?.reference_number || '').trim(),
+          paidAmountCentavos,
+          paidAmountPhp,
+        };
+      })
+      .filter((entry) => !eventTypeQuery || entry.eventType === eventTypeQuery)
+      .filter((entry) => !jobIdQuery || entry.nearmeJobId === jobIdQuery || entry.nearmeRef === jobIdQuery)
+      .slice(0, limit);
+
+    const jobIdCandidates = [...new Set(
+      transformed
+        .map((entry) => entry.nearmeJobId)
+        .filter((value) => ObjectId.isValid(value))
+    )].map((id) => new ObjectId(id));
+
+    const relatedJobs = jobIdCandidates.length > 0
+      ? await getDB().collection('jobs_ledger').find(
+        { _id: { $in: jobIdCandidates } },
+        {
+          projection: {
+            jobNumber: 1,
+            status: 1,
+            updatedAt: 1,
+            financials: 1,
+            payment: 1,
+          },
+        }
+      ).toArray()
+      : [];
+
+    const jobsById = new Map(relatedJobs.map((job) => [String(job._id), job]));
+
+    const items = transformed.map((entry) => {
+      const job = jobsById.get(entry.nearmeJobId);
+      return {
+        ...entry,
+        resolvedJob: job ? {
+          _id: String(job._id),
+          jobNumber: job.jobNumber || null,
+          status: job.status || null,
+          updatedAt: job.updatedAt || null,
+          grossPrice: round2(job.financials?.grossPrice || 0),
+          paymentStatus: String(job.financials?.paymentStatus || ''),
+          cashlessState: String(job.payment?.cashless?.state || ''),
+          checkoutSessionId: String(job.payment?.cashless?.checkoutSessionId || ''),
+          webhookEventId: String(job.payment?.cashless?.webhookEventId || ''),
+        } : null,
+      };
+    });
+
+    return res.json({
+      success: true,
+      provider: 'paymongo',
+      filters: {
+        limit,
+        eventType: eventTypeQuery || null,
+        jobId: jobIdQuery || null,
+      },
+      count: items.length,
+      items,
+    });
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
 router.patch('/v1/admin/jobs/:id/verify-payment', requireAuth, async (req, res) => {
   try {
     const id = parseObjectId(req.params.id);
@@ -734,6 +1208,38 @@ router.get('/v1/services', async (req, res) => {
   try {
     const services = await getDB().collection('services').find({ active: { $ne: false } }).sort({ label: 1 }).toArray();
     res.json(services);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.get('/v1/providers/:id/offers', async (req, res) => {
+  try {
+    const providerId = String(req.params.id || '').trim();
+    const providerQuery = Number.isInteger(Number(providerId))
+      ? { id: Number(providerId) }
+      : parseObjectId(providerId) ? { _id: parseObjectId(providerId) } : null;
+    if (!providerQuery) return res.status(400).json({ error: 'Invalid provider id' });
+
+    const provider = await getDB().collection('providers').findOne(providerQuery);
+    if (!provider) return res.status(404).json({ error: 'Provider not found' });
+
+    const providerUserId = String(provider.userId || '').trim();
+    const bundleProviderIds = [...new Set([providerUserId, String(provider.id || '').trim(), String(provider._id || '').trim()].filter(Boolean))];
+    const [fixedServices, customBundles] = await Promise.all([
+      providerUserId
+        ? getDB().collection('provider_services').find({
+          providerUserId,
+          active: { $ne: false },
+        }).sort({ createdAt: -1 }).toArray()
+        : [],
+      getDB().collection('custom_packages').find({
+        providerId: { $in: bundleProviderIds },
+        active: { $ne: false },
+      }).sort({ createdAt: -1 }).toArray(),
+    ]);
+
+    res.json({ fixedServices, customBundles });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -870,7 +1376,7 @@ const createProviderServiceHandler = async (req, res) => {
     if (!payload.title || !payload.category || !payload.description) {
       return res.status(400).json({ error: 'title, category, and description are required' });
     }
-    if (payload.price < 150) return res.status(400).json({ error: 'Price cannot be less than PHP 150' });
+    if (payload.price <= 1) return res.status(400).json({ error: 'Price must be greater than PHP 1' });
     if (payload.durationHours === 0 && payload.durationMinutes === 0) {
       return res.status(400).json({ error: 'Duration cannot be zero' });
     }
@@ -904,7 +1410,7 @@ const patchProviderServiceHandler = async (req, res) => {
     if (req.body.active !== undefined) update.active = Boolean(req.body.active);
     update.updatedAt = new Date();
 
-    if (update.price !== undefined && update.price < 150) return res.status(400).json({ error: 'Price cannot be less than PHP 150' });
+    if (update.price !== undefined && update.price <= 1) return res.status(400).json({ error: 'Price must be greater than PHP 1' });
     const hours = update.durationHours !== undefined ? update.durationHours : existing.durationHours;
     const minutes = update.durationMinutes !== undefined ? update.durationMinutes : existing.durationMinutes;
     if (hours === 0 && minutes === 0) return res.status(400).json({ error: 'Duration cannot be zero' });

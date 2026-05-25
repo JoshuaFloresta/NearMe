@@ -1,25 +1,23 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { Link, Navigate, useParams } from 'react-router-dom';
-import { CreditCard, ImagePlus, Wallet, Star } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { Link, Navigate, useNavigate, useParams } from 'react-router-dom';
+import { CreditCard, Wallet, Star } from 'lucide-react';
 import { toast } from 'sonner';
 import NearMeNav from '../components/nearme/NearMeNav';
 import NearMeFooter from '../components/nearme/NearMeFooter';
 import StarRating from '../components/nearme/StarRating';
 import { PaymentPortalSkeleton } from '../components/nearme/PageSkeletons';
-import { apiRequest, uploadImage } from '../lib/api';
+import { apiRequest } from '../lib/api';
 import { getStoredNearMeUser } from '../lib/providerAccess';
-
-const isValidImage = (file) => ['image/jpeg', 'image/png'].includes(file?.type || '');
 
 export default function NearMePayNow() {
   const { jobId } = useParams();
+  const navigate = useNavigate();
   const [user] = useState(() => getStoredNearMeUser());
   const [job, setJob] = useState(null);
-  const [provider, setProvider] = useState(null);
   const [loading, setLoading] = useState(true);
   const [paymentMethod, setPaymentMethod] = useState('cash');
-  const [proofFile, setProofFile] = useState(null);
   const [submitting, setSubmitting] = useState(false);
+  const [cashlessStarted, setCashlessStarted] = useState(false);
   const [rating, setRating] = useState(0);
   const [comment, setComment] = useState('');
   const [reviewSubmitting, setReviewSubmitting] = useState(false);
@@ -32,10 +30,6 @@ export default function NearMePayNow() {
         const matched = (Array.isArray(jobs) ? jobs : []).find((item) => String(item._id) === String(jobId));
         if (!matched) throw new Error('Job not found');
         setJob(matched);
-        if (matched.providerObjectId) {
-          const profile = await apiRequest(`/api/providers/${matched.providerObjectId}`).catch(() => null);
-          setProvider(profile);
-        }
       } catch (error) {
         toast.error(error.message || 'Could not load payment details');
       } finally {
@@ -45,12 +39,43 @@ export default function NearMePayNow() {
     load();
   }, [jobId]);
 
-  const proofError = useMemo(() => {
-    if (!proofFile) return 'Attach a payment screenshot.';
-    if (!isValidImage(proofFile)) return 'File must be JPEG or PNG.';
-    if (proofFile.size > 5 * 1024 * 1024) return 'File must be 5MB or smaller.';
-    return '';
-  }, [proofFile]);
+  useEffect(() => {
+    const activeJobId = localStorage.getItem('nearme_active_cashless_job_id');
+    if (activeJobId && String(activeJobId) === String(jobId)) {
+      setCashlessStarted(true);
+    }
+  }, [jobId]);
+
+  useEffect(() => {
+    if (String(job?.status || '') !== 'Completed') return;
+    localStorage.removeItem('nearme_active_cashless_job_id');
+    setCashlessStarted(false);
+    navigate('/my-orders');
+  }, [job?.status, navigate]);
+
+  useEffect(() => {
+    if (!job?._id) return undefined;
+    if (!cashlessStarted) return undefined;
+    let mounted = true;
+    const timer = setInterval(async () => {
+      try {
+        const jobs = await apiRequest('/api/v1/jobs');
+        const matched = (Array.isArray(jobs) ? jobs : []).find((item) => String(item._id) === String(job._id));
+        if (!mounted || !matched) return;
+        setJob(matched);
+        if (String(matched.status || '') === 'Completed') {
+          setCashlessStarted(false);
+          toast.success('Payment received. Job is now completed.');
+        }
+      } catch {
+        // silent background poll
+      }
+    }, 6000);
+    return () => {
+      mounted = false;
+      clearInterval(timer);
+    };
+  }, [cashlessStarted, job?._id]);
 
   if (!user) return <Navigate to="/login" replace />;
 
@@ -69,20 +94,24 @@ export default function NearMePayNow() {
         });
         toast.success('Cash payment confirmed');
       } else {
-        if (proofError) {
-          toast.error(proofError);
-          setSubmitting(false);
+        const checkout = await apiRequest(`/api/v1/jobs/${job._id}/payment/cashless-checkout`, {
+          method: 'POST',
+        });
+        const checkoutUrl = String(checkout?.checkoutUrl || '').trim();
+        if (!checkoutUrl) {
+          throw new Error('Cashless checkout URL not available');
+        }
+        const newTab = window.open(checkoutUrl, '_blank', 'noopener,noreferrer');
+        if (!newTab) {
+          toast.error('Popup blocked. Please allow popups for this site to continue cashless payment in a new tab.');
           return;
         }
-        const proofUrl = await uploadImage(proofFile, 'payment-proof');
-        await apiRequest(`/api/v1/jobs/${job._id}/payment/qr-proof`, {
-          method: 'POST',
-          body: JSON.stringify({
-            proofUrl,
-            declaredAmount: job.financials?.grossPrice || 0,
-          }),
-        });
-        toast.success('Payment proof submitted for verification');
+        setCashlessStarted(true);
+        localStorage.setItem('nearme_active_cashless_job_id', String(job._id));
+        localStorage.setItem('nearme_active_cashless_started_at', String(Date.now()));
+        toast.success('Payment page opened in a new tab. Return here after payment.');
+        navigate('/my-orders?cashless=processing');
+        return;
       }
       const refreshed = await apiRequest('/api/v1/jobs');
       const matched = (Array.isArray(refreshed) ? refreshed : []).find((item) => String(item._id) === String(job._id));
@@ -143,8 +172,8 @@ export default function NearMePayNow() {
                   <button type="button" onClick={() => setPaymentMethod('cash')} className={`p-4 border-2 border-bauhaus-ink text-left ${paymentMethod === 'cash' ? 'bg-bauhaus-yellow' : 'bg-white'}`}>
                     <div className="flex items-center gap-2 font-black text-xs uppercase tracking-wider"><Wallet className="h-4 w-4" /> Cash Payment</div>
                   </button>
-                  <button type="button" onClick={() => setPaymentMethod('qr')} className={`p-4 border-2 border-bauhaus-ink text-left ${paymentMethod === 'qr' ? 'bg-bauhaus-yellow' : 'bg-white'}`}>
-                    <div className="flex items-center gap-2 font-black text-xs uppercase tracking-wider"><CreditCard className="h-4 w-4" /> QR Code Payment</div>
+                  <button type="button" onClick={() => setPaymentMethod('cashless')} className={`p-4 border-2 border-bauhaus-ink text-left ${paymentMethod === 'cashless' ? 'bg-bauhaus-yellow' : 'bg-white'}`}>
+                    <div className="flex items-center gap-2 font-black text-xs uppercase tracking-wider"><CreditCard className="h-4 w-4" /> Cashless Payment</div>
                   </button>
                 </div>
 
@@ -154,27 +183,45 @@ export default function NearMePayNow() {
                   </div>
                 )}
 
-                {paymentMethod === 'qr' && (
+                {paymentMethod === 'cashless' && (
                   <div className="mt-4 space-y-3">
-                    <div className="border-2 border-bauhaus-ink bg-bauhaus-canvas p-3">
-                      <div className="font-black text-[10px] uppercase tracking-wider text-bauhaus-ink/55">Provider QR</div>
-                      {provider?.paymentQrUrl ? (
-                        <img src={provider.paymentQrUrl} alt="Provider QR" className="mt-2 w-full max-w-sm border-2 border-bauhaus-ink bg-white" />
-                      ) : (
-                        <div className="mt-2 font-bold text-xs text-bauhaus-ink/60">Provider QR image not set.</div>
-                      )}
+                    <div className="border-2 border-bauhaus-ink bg-bauhaus-canvas p-4 font-bold text-sm text-bauhaus-ink">
+                      Payment opens in a new tab, so you stay in the app. After payment, return to My Orders and wait a few seconds while payment syncs.
                     </div>
-                    <label className="block border-2 border-dashed border-bauhaus-ink bg-white p-5 cursor-pointer hover:bg-bauhaus-canvas">
-                      <div className="flex items-center gap-2 font-black text-xs uppercase tracking-wider text-bauhaus-ink"><ImagePlus className="h-4 w-4" /> Upload Payment Screenshot (JPEG/PNG, max 5MB)</div>
-                      <input type="file" accept="image/jpeg,image/png" onChange={(e) => setProofFile(e.target.files?.[0] || null)} className="sr-only" />
-                      <div className="mt-2 font-bold text-xs text-bauhaus-ink/60">{proofFile ? proofFile.name : 'No file selected'}</div>
-                      {proofFile && proofError && <div className="mt-1 text-xs font-black text-bauhaus-red">{proofError}</div>}
-                    </label>
+                    {cashlessStarted && (
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          try {
+                            await apiRequest(`/api/v1/jobs/${job._id}/payment/cashless-sync`, {
+                              method: 'POST',
+                            }).catch(() => null);
+                            const refreshed = await apiRequest('/api/v1/jobs');
+                            const updated = (Array.isArray(refreshed) ? refreshed : []).find((item) => String(item._id) === String(job._id));
+                            if (!updated) throw new Error('Job not found');
+                            setJob(updated);
+                            if (String(updated.status || '').toLowerCase() === 'completed') {
+                              setCashlessStarted(false);
+                              localStorage.removeItem('nearme_active_cashless_job_id');
+                              toast.success('Payment synced successfully');
+                              navigate('/my-orders');
+                              return;
+                            }
+                            toast.message('Payment is still syncing. Please wait a bit then refresh again.');
+                          } catch (error) {
+                            toast.error(error.message || 'Could not refresh payment status');
+                          }
+                        }}
+                        className="px-4 py-2 bg-white border-2 border-bauhaus-ink font-black text-[10px] uppercase tracking-wider"
+                      >
+                        Refresh Payment Status
+                      </button>
+                    )}
                   </div>
                 )}
 
-                <button type="button" onClick={submitPayment} disabled={submitting || (paymentMethod === 'qr' && Boolean(proofError))} className="mt-4 w-full px-4 py-3 bg-bauhaus-red text-white border-2 border-bauhaus-ink font-black text-xs uppercase tracking-wider disabled:opacity-60">
-                  {submitting ? 'Submitting...' : 'Submit Payment'}
+                <button type="button" onClick={submitPayment} disabled={submitting} className="mt-4 w-full px-4 py-3 bg-bauhaus-red text-white border-2 border-bauhaus-ink font-black text-xs uppercase tracking-wider disabled:opacity-60">
+                  {submitting ? 'Submitting...' : paymentMethod === 'cashless' ? 'Proceed to Cashless Payment' : 'Submit Payment'}
                 </button>
               </section>
             )}

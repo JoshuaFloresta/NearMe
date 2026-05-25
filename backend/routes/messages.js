@@ -121,9 +121,12 @@ router.post('/conversations/:id/messages', requireAuth, async (req, res) => {
       return res.status(400).json({ error: 'Invalid conversation ID' });
     }
 
-    const { text } = req.body;
-    if (!text?.trim()) {
-      return res.status(400).json({ error: 'Message text is required' });
+    const text = String(req.body?.text || '').trim();
+    const attachments = Array.isArray(req.body?.attachments)
+      ? req.body.attachments.map((item) => String(item || '').trim()).filter(Boolean)
+      : [];
+    if (!text && attachments.length === 0) {
+      return res.status(400).json({ error: 'Message text or attachment is required' });
     }
 
     const conversationId = new ObjectId(req.params.id);
@@ -138,8 +141,8 @@ router.post('/conversations/:id/messages', requireAuth, async (req, res) => {
       senderId: sender.id,
       senderName: sender.name || sender.email,
       senderRole: sender.role || 'customer',
-      text: text.trim(),
-      attachments: Array.isArray(req.body.attachments) ? req.body.attachments : [],
+      text,
+      attachments,
       readBy: [sender.id],
       createdAt: now,
     };
@@ -151,7 +154,7 @@ router.post('/conversations/:id/messages', requireAuth, async (req, res) => {
       { _id: conversationId },
       {
         $set: {
-          lastMessage: message.text,
+          lastMessage: message.text || (message.attachments.length > 0 ? '[Image]' : ''),
           lastMessageId: String(result.insertedId),
           lastMessageAt: now,
           updatedAt: now,

@@ -2,7 +2,7 @@ import express from 'express';
 import { ObjectId } from 'mongodb';
 import { getDB } from '../mongoConnect.js';
 import { addGeoLocation } from '../geo.js';
-import { isAdminRole, requireAuth } from '../security.js';
+import { isAdminRole, normalizeRole, requireAuth } from '../security.js';
 
 const router = express.Router();
 
@@ -83,6 +83,74 @@ const publicProviderUpdate = (body) => {
 const nextProviderId = async () => {
   const latest = await getDB().collection('providers').find({ id: { $type: 'number' } }).sort({ id: -1 }).limit(1).next();
   return (latest?.id || 0) + 1;
+};
+const getStartingRateMap = async (providers = []) => {
+  const providerUserIds = Array.from(new Set(
+    providers.map((provider) => String(provider?.userId || '').trim()).filter(Boolean)
+  ));
+  if (providerUserIds.length === 0) return new Map();
+
+  const rows = await getDB().collection('provider_services').aggregate([
+    {
+      $match: {
+        providerUserId: { $in: providerUserIds },
+        active: { $ne: false },
+      },
+    },
+    {
+      $project: {
+        providerUserId: 1,
+        normalizedPrice: {
+          $convert: { input: '$price', to: 'double', onError: null, onNull: null },
+        },
+      },
+    },
+    { $match: { normalizedPrice: { $gt: 0 } } },
+    {
+      $group: {
+        _id: '$providerUserId',
+        minPrice: { $min: '$normalizedPrice' },
+      },
+    },
+  ]).toArray();
+
+  const map = new Map();
+  rows.forEach((row) => {
+    map.set(String(row._id), Math.round(Number(row.minPrice || 0) * 100) / 100);
+  });
+  return map;
+};
+const withStartingRate = (provider, startingRateMap) => {
+  const key = String(provider?.userId || '').trim();
+  const baseRate = numericOrDefault(provider?.rate, 0);
+  const startingRate = key && startingRateMap.has(key) ? numericOrDefault(startingRateMap.get(key), baseRate) : baseRate;
+  return { ...provider, startingRate };
+};
+const providerReviewIdCandidates = (provider) => {
+  const values = [
+    provider?.id,
+    String(provider?.id || '').trim(),
+    String(provider?._id || '').trim(),
+  ].filter((value) => value !== null && value !== undefined && String(value).trim());
+  return Array.from(new Set(values));
+};
+const recalculateProviderReviewStats = async (provider) => {
+  const candidates = providerReviewIdCandidates(provider);
+  if (candidates.length === 0) return { count: 0, rating: 0 };
+
+  const reviews = await getDB().collection('reviews').find({
+    providerId: { $in: candidates },
+    status: { $ne: 'deleted' },
+  }).toArray();
+
+  const ratings = reviews
+    .map((review) => Number(review?.rating || 0))
+    .filter((value) => Number.isFinite(value) && value >= 1 && value <= 5);
+  if (ratings.length === 0) return { count: 0, rating: 0 };
+
+  const sum = ratings.reduce((total, value) => total + value, 0);
+  const avg = Math.round((sum / ratings.length) * 10) / 10;
+  return { count: ratings.length, rating: avg };
 };
 
 router.get('/services', async (req, res) => {
@@ -178,7 +246,8 @@ router.get('/providers', async (req, res) => {
     }
 
     const providers = await getDB().collection('providers').find(query).sort({ rating: -1, jobs: -1 }).toArray();
-    res.json(providers);
+    const startingRateMap = await getStartingRateMap(providers);
+    res.json(providers.map((provider) => withStartingRate(provider, startingRateMap)));
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -202,7 +271,8 @@ router.get('/providers/:id', async (req, res) => {
     const provider = await getDB().collection('providers').findOne(query);
     if (!provider) return res.status(404).json({ error: 'Provider not found' });
 
-    res.json(provider);
+    const startingRateMap = await getStartingRateMap([provider]);
+    res.json(withStartingRate(provider, startingRateMap));
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -308,6 +378,11 @@ router.post('/providers/:id/reviews', requireAuth, async (req, res) => {
   try {
     const query = parseProviderId(req.params.id);
     if (!query) return res.status(400).json({ error: 'Invalid provider ID' });
+    const actorRole = normalizeRole(req.user?.role || '');
+    const isClientRole = ['client', 'customer', 'user'].includes(actorRole);
+    if (!isClientRole) {
+      return res.status(403).json({ error: 'Only clients can leave provider reviews' });
+    }
 
     const provider = await getDB().collection('providers').findOne(query);
     if (!provider) return res.status(404).json({ error: 'Provider not found' });
@@ -321,7 +396,8 @@ router.post('/providers/:id/reviews', requireAuth, async (req, res) => {
       return res.status(400).json({ error: 'Review text must be 10 to 500 characters' });
     }
 
-    const review = {
+    const now = new Date();
+    const reviewPayload = {
       providerId: provider.id ?? String(provider._id),
       providerUserId: provider.userId ? String(provider.userId) : null,
       customerUserId: String(req.user._id),
@@ -329,23 +405,45 @@ router.post('/providers/:id/reviews', requireAuth, async (req, res) => {
       rating,
       text,
       status: 'published',
-      createdAt: new Date(),
-      updatedAt: new Date(),
+      updatedAt: now,
     };
+    const reviewQuery = {
+      providerId: { $in: providerReviewIdCandidates(provider) },
+      customerUserId: String(req.user._id),
+      status: { $ne: 'deleted' },
+    };
+    const existing = await getDB().collection('reviews').findOne(reviewQuery);
 
-    const result = await getDB().collection('reviews').insertOne(review);
+    let savedReview;
+    let created = false;
+    if (existing) {
+      await getDB().collection('reviews').updateOne(
+        { _id: existing._id },
+        { $set: reviewPayload }
+      );
+      savedReview = { ...existing, ...reviewPayload, _id: existing._id };
+    } else {
+      const review = { ...reviewPayload, createdAt: now };
+      const result = await getDB().collection('reviews').insertOne(review);
+      savedReview = { ...review, _id: result.insertedId };
+      created = true;
+    }
 
-    const currentReviews = Number(provider.reviews || 0);
-    const currentRating = Number(provider.rating || 0);
-    const nextReviews = currentReviews + 1;
-    const nextRating = Math.round((((currentRating * currentReviews) + rating) / nextReviews) * 10) / 10;
-
+    const nextStats = await recalculateProviderReviewStats(provider);
     await getDB().collection('providers').updateOne(
       { _id: provider._id },
-      { $set: { reviews: nextReviews, rating: nextRating, updatedAt: new Date() } }
+      { $set: { reviews: nextStats.count, rating: nextStats.rating, updatedAt: new Date() } }
     );
 
-    res.status(201).json({ ...review, _id: result.insertedId });
+    res.status(created ? 201 : 200).json({
+      review: savedReview,
+      provider: {
+        id: provider.id ?? String(provider._id),
+        reviews: nextStats.count,
+        rating: nextStats.rating,
+      },
+      created,
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

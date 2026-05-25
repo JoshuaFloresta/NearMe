@@ -132,14 +132,14 @@ export default function NearMeLanding() {
 
       {/* ── TRUST STRIP ──────────────────── */}
       <section className="bg-bauhaus-yellow border-b-4 border-bauhaus-ink">
-        <div className="max-w-7xl mx-auto">
-          <div className="grid grid-cols-1 sm:grid-cols-3 divide-y sm:divide-y-0 sm:divide-x divide-bauhaus-ink">
+        <div className="overflow-hidden">
+          <div className="nearme-marquee-track flex w-max">
             {[
               { icon: Shield, label: 'Fully Verified Providers', sub: 'ID & background checked' },
               { icon: Star, label: 'Top Rated Services', sub: 'Average 4.8★ rating' },
               { icon: Clock, label: 'Fast Response', sub: 'Providers near you now' },
-            ].map(({ icon: Icon, label, sub }) => (
-              <div key={label} className="flex items-center gap-4 px-6 sm:px-8 py-6">
+            ].flatMap((item) => [item, item]).map(({ icon: Icon, label, sub }, idx) => (
+              <div key={`${label}-${idx}`} className="flex items-center gap-4 px-6 sm:px-8 py-6 border-r-2 border-bauhaus-ink min-w-[320px]">
                 <div className="w-10 h-10 bg-bauhaus-ink border-2 border-bauhaus-ink flex items-center justify-center shrink-0">
                   <Icon className="h-5 w-5 text-bauhaus-yellow" />
                 </div>
@@ -359,6 +359,15 @@ export default function NearMeLanding() {
         </div>
       </section>
 
+      <style>{`
+        .nearme-marquee-track {
+          animation: nearme-marquee 22s linear infinite;
+        }
+        @keyframes nearme-marquee {
+          0% { transform: translateX(0); }
+          100% { transform: translateX(-50%); }
+        }
+      `}</style>
       <NearMeFooter />
     </div>
   );

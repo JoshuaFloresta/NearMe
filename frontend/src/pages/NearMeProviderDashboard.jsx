@@ -100,7 +100,24 @@ const parseInquiryResponseCard = (text = '') => {
     return null;
   }
 };
+const isOtherInquiry = (payload) => String(payload?.serviceCategory || '').toLowerCase() === 'other';
+const isFixedOrBundleSelection = (payload) => {
+  const type = String(payload?.serviceSelection?.type || '').toLowerCase();
+  return type === 'fixed' || type === 'bundle';
+};
+const getSelectedPrice = (payload) => {
+  const selection = payload?.serviceSelection || {};
+  const candidates = [selection.price, selection.hourly_rate, selection.priceFixed];
+  const picked = candidates.map((value) => Number(value)).find((value) => Number.isFinite(value) && value > 0);
+  return picked || 0;
+};
 const chatPreviewText = (text = '') => {
+  if (String(text || '').startsWith('WORK_PROOF_RECEIPT::')) {
+    return 'Work completion receipt sent';
+  }
+  if (String(text || '').startsWith('WORK_PROOF::')) {
+    return 'Work completion proof sent';
+  }
   const inquiryResponse = parseInquiryResponseCard(text);
   if (inquiryResponse) {
     return inquiryResponse.decision === 'accepted'
@@ -200,13 +217,27 @@ export default function NearMeProviderDashboard({ focusSection = null }) {
   const [providerConversations, setProviderConversations] = useState([]);
   const [providerReviews, setProviderReviews] = useState([]);
   const [providerJobs, setProviderJobs] = useState([]);
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [confirmAction, setConfirmAction] = useState({ open: false, title: '', message: '', confirmLabel: '', action: null, busy: false });
+  const [doneModal, setDoneModal] = useState({ open: false, job: null });
+  const [doneForm, setDoneForm] = useState({ summary: '', files: [] });
+  const [submittingDone, setSubmittingDone] = useState(false);
   const [acceptingInquiryId, setAcceptingInquiryId] = useState('');
+  const [inquiryQuoteModal, setInquiryQuoteModal] = useState({ open: false, conversation: null, inquiry: null });
+  const [inquiryQuoteForm, setInquiryQuoteForm] = useState({ price: '', inclusions: '', breakdown: '', description: '' });
   const [calendarDetail, setCalendarDetail] = useState({ open: false, date: null, jobs: [], dayMeta: null });
   const [bookingDetail, setBookingDetail] = useState({ open: false, booking: null });
   const [workTab, setWorkTab] = useState('calendar');
-  const isSettingsOnly = focusSection === 'settings';
-  const isChatOnly = focusSection === 'chat-history';
-  const isFocusedView = isSettingsOnly || isChatOnly;
+  const isOverview = !focusSection;
+  const isCalendarView = isOverview || focusSection === 'calendar';
+  const isBookingsView = isOverview || focusSection === 'bookings';
+  const isChatView = isOverview || focusSection === 'chat-history';
+  const isPricingView = isOverview || focusSection === 'pricing';
+  const isReviewsView = isOverview || focusSection === 'reviews';
+  const isSettingsView = isOverview || focusSection === 'settings';
+  const isFocusedView = !isOverview;
+  const showCalendarPanel = isOverview ? workTab === 'calendar' : focusSection === 'calendar';
+  const showChatPanel = isOverview ? workTab === 'chat' : focusSection === 'chat-history';
   const [calendarDate, setCalendarDate] = useState(() => {
     const now = new Date();
     return new Date(now.getFullYear(), now.getMonth(), 1);
@@ -242,8 +273,26 @@ export default function NearMeProviderDashboard({ focusSection = null }) {
   const [customCategoryInput, setCustomCategoryInput] = useState('');
   const [settingsCategoryPickerValue, setSettingsCategoryPickerValue] = useState('');
   const [fixedCategoryPickerValue, setFixedCategoryPickerValue] = useState('');
+  const [customFixedCategoryInput, setCustomFixedCategoryInput] = useState('');
   const [tagPickerValue, setTagPickerValue] = useState('');
+  const [customTagInput, setCustomTagInput] = useState('');
   const [certPickerValue, setCertPickerValue] = useState('');
+  const triggerRefresh = () => setRefreshKey((current) => current + 1);
+  const closeConfirmAction = () => setConfirmAction({ open: false, title: '', message: '', confirmLabel: '', action: null, busy: false });
+  const openConfirmAction = ({ title, message, confirmLabel = 'Confirm', action }) => {
+    setConfirmAction({ open: true, title, message, confirmLabel, action, busy: false });
+  };
+  const runConfirmAction = async () => {
+    if (confirmAction.busy || typeof confirmAction.action !== 'function') return;
+    setConfirmAction((current) => ({ ...current, busy: true }));
+    try {
+      await confirmAction.action();
+      closeConfirmAction();
+    } catch (error) {
+      toast.error(error.message || 'Could not complete action');
+      setConfirmAction((current) => ({ ...current, busy: false }));
+    }
+  };
 
   useEffect(() => {
     const syncUser = () => setUser(getStoredNearMeUser());
@@ -258,9 +307,9 @@ export default function NearMeProviderDashboard({ focusSection = null }) {
   }, []);
 
   useEffect(() => {
-    if (isChatOnly) setWorkTab('chat');
-    if (isSettingsOnly) setWorkTab('calendar');
-  }, [isChatOnly, isSettingsOnly]);
+    if (focusSection === 'chat-history') setWorkTab('chat');
+    if (focusSection === 'calendar') setWorkTab('calendar');
+  }, [focusSection]);
 
   const firstName = useMemo(() => user?.fname || user?.name?.split(' ')?.[0] || 'Provider', [user]);
   const categoryDropdownOptions = useMemo(() => {
@@ -307,7 +356,7 @@ export default function NearMeProviderDashboard({ focusSection = null }) {
       })
       .catch((error) => toast.error(error.message || 'Could not load provider settings'))
       .finally(() => setProfileLoading(false));
-  }, [user?.id]);
+  }, [user?.id, refreshKey]);
 
   useEffect(() => {
     const providerId = providerPublicId(providerProfile);
@@ -363,16 +412,21 @@ export default function NearMeProviderDashboard({ focusSection = null }) {
       categoryMap.set('other', { value: 'other', label: 'Others' });
       setCategoryOptions(Array.from(categoryMap.values()).sort((a, b) => a.label.localeCompare(b.label)));
     });
-  }, [providerProfile.id, providerProfile._id, profileLoading, user?.id, user?._id]);
+  }, [providerProfile.id, providerProfile._id, profileLoading, user?.id, user?._id, refreshKey]);
 
   useEffect(() => {
-    const userId = String(user?.id || user?._id || '').trim();
-    if (!userId) return undefined;
+    const userIdCandidates = Array.from(new Set([
+      String(user?.id || '').trim(),
+      String(user?._id || '').trim(),
+    ].filter(Boolean)));
+    if (userIdCandidates.length === 0) return undefined;
+    const joinUserId = userIdCandidates[0];
     const socket = getSocket();
-    socket.emit('join:user', userId);
+    socket.emit('join:user', joinUserId);
 
-    const onJobAccepted = (job) => {
-      if (String(job?.providerUserId || '') !== userId) return;
+    const upsertProviderJob = (job) => {
+      if (!job) return;
+      if (!userIdCandidates.includes(String(job?.providerUserId || '').trim())) return;
       setProviderJobs((current) => {
         const exists = current.some((item) => String(item?._id || '') === String(job?._id || ''));
         if (exists) return current.map((item) => (String(item?._id || '') === String(job?._id || '') ? job : item));
@@ -380,11 +434,59 @@ export default function NearMeProviderDashboard({ focusSection = null }) {
       });
     };
 
-    socket.on('job:accepted', onJobAccepted);
+    socket.on('job:created', upsertProviderJob);
+    socket.on('job:accepted', upsertProviderJob);
+    socket.on('job:started', upsertProviderJob);
+    socket.on('job:pending-payment', upsertProviderJob);
+    socket.on('job:completed', upsertProviderJob);
+    socket.on('job:cancelled-to-inquiry', upsertProviderJob);
+
     return () => {
-      socket.off('job:accepted', onJobAccepted);
+      socket.off('job:created', upsertProviderJob);
+      socket.off('job:accepted', upsertProviderJob);
+      socket.off('job:started', upsertProviderJob);
+      socket.off('job:pending-payment', upsertProviderJob);
+      socket.off('job:completed', upsertProviderJob);
+      socket.off('job:cancelled-to-inquiry', upsertProviderJob);
     };
   }, [user?.id, user?._id]);
+
+  useEffect(() => {
+    const pendingCashlessIds = providerJobs
+      .filter((job) => (
+        String(job?.status || '').toLowerCase() === 'pending payment'
+        && String(job?.payment?.cashless?.state || '').toLowerCase() === 'initiated'
+      ))
+      .map((job) => String(job._id || ''))
+      .filter(Boolean);
+    if (pendingCashlessIds.length === 0) return undefined;
+
+    let mounted = true;
+    const syncPendingCashless = async () => {
+      const results = await Promise.all(
+        pendingCashlessIds.map((jobId) => (
+          apiRequest(`/api/v1/jobs/${jobId}/payment/cashless-sync`, { method: 'POST' }).catch(() => null)
+        ))
+      );
+      if (!mounted) return;
+      const completedById = new Map(
+        results
+          .map((result) => result?.job)
+          .filter((job) => String(job?.status || '').toLowerCase() === 'completed')
+          .map((job) => [String(job._id), job])
+      );
+      if (completedById.size > 0) {
+        setProviderJobs((current) => current.map((job) => completedById.get(String(job._id)) || job));
+      }
+    };
+
+    syncPendingCashless();
+    const timer = setInterval(syncPendingCashless, 10000);
+    return () => {
+      mounted = false;
+      clearInterval(timer);
+    };
+  }, [providerJobs]);
 
   useEffect(() => {
     if (settingsForm.serviceId === 'other' && settingsForm.service) {
@@ -399,11 +501,81 @@ export default function NearMeProviderDashboard({ focusSection = null }) {
         body: JSON.stringify(body),
       });
       setProviderJobs((current) => current.map((item) => (String(item._id) === String(updated._id) ? updated : item)));
+      triggerRefresh();
       toast.success('Job updated');
       return updated;
     } catch (error) {
       toast.error(error.message || 'Could not update job');
       return null;
+    }
+  };
+  const openMarkDoneModal = (job) => {
+    setDoneForm({ summary: '', files: [] });
+    setDoneModal({ open: true, job });
+  };
+  const closeMarkDoneModal = () => {
+    setDoneModal({ open: false, job: null });
+    setDoneForm({ summary: '', files: [] });
+  };
+  const submitDoneWithProof = async () => {
+    if (!doneModal.job?._id) return;
+    if (!doneForm.summary.trim()) {
+      toast.error('Work summary is required');
+      return;
+    }
+    if (!Array.isArray(doneForm.files) || doneForm.files.length < 1) {
+      toast.error('Upload at least one proof image');
+      return;
+    }
+    setSubmittingDone(true);
+    try {
+      const uploadedUrls = [];
+      for (const file of doneForm.files) {
+        // sequential upload to keep backend load predictable
+        // eslint-disable-next-line no-await-in-loop
+        const url = await uploadImage(file, 'job-proof');
+        uploadedUrls.push(url);
+      }
+
+      const grossPrice = Number(doneModal.job?.financials?.grossPrice || doneModal.job?.quote?.grossPrice || 0);
+      const platformFee = Number(doneModal.job?.financials?.platformFeeAmount || 0);
+      const netPayout = Number(doneModal.job?.financials?.providerNetPayout || Math.max(0, grossPrice - platformFee));
+      const receiptPayload = {
+        type: 'work_completion_receipt',
+        receiptNo: String(doneModal.job?.jobNumber || `NM-${String(doneModal.job?._id || '').slice(-8) || Date.now()}`),
+        issuedAt: new Date().toISOString(),
+        service: String(doneModal.job?.serviceId || providerProfile.service || 'Service'),
+        summary: doneForm.summary.trim(),
+        currency: 'PHP',
+        proofImageCount: uploadedUrls.length,
+        breakdown: [
+          { label: 'Service Amount', amount: grossPrice },
+          { label: 'Platform Fee', amount: platformFee },
+          { label: 'Provider Net', amount: netPayout },
+        ],
+        totalDue: grossPrice,
+      };
+      const conversationId = doneModal.job.conversationId || doneModal.job.raw?.conversationId;
+      if (conversationId) {
+        await apiRequest(`/api/conversations/${conversationId}/messages`, {
+          method: 'POST',
+          body: JSON.stringify({
+            text: `WORK_PROOF_RECEIPT::${JSON.stringify(receiptPayload)}`,
+            attachments: uploadedUrls,
+          }),
+        });
+      }
+
+      await runJobAction(doneModal.job._id, 'request-payment', {
+        workSummary: doneForm.summary.trim(),
+        proofUrls: uploadedUrls,
+      });
+      closeMarkDoneModal();
+      toast.success('Work proof sent. Client has been asked to proceed with payment.');
+    } catch (error) {
+      toast.error(error.message || 'Could not submit work proof');
+    } finally {
+      setSubmittingDone(false);
     }
   };
 
@@ -426,13 +598,25 @@ export default function NearMeProviderDashboard({ focusSection = null }) {
       return date && !Number.isNaN(date.getTime()) ? date : null;
     };
 
+    const conversationCustomerByUserId = new Map(
+      (providerConversations || [])
+        .map((conversation) => [String(conversation.customerUserId || ''), conversation.customer?.name || ''])
+        .filter(([id]) => Boolean(id))
+    );
+
     const rowsFromJobs = (providerJobs || []).map((job) => {
       const scheduledAt = parseScheduledAtValue(job) || normalizeDate(job.scheduledAt);
+      const resolvedCustomerName = String(
+        job.clientName
+        || job.customerName
+        || conversationCustomerByUserId.get(String(job.clientUserId || ''))
+        || ''
+      ).trim();
       return {
         key: `job:${String(job._id || Math.random().toString(36).slice(2))}`,
         source: 'job',
         sourceId: String(job._id || ''),
-        customerName: job.clientName || job.customerName || 'Customer',
+        customerName: resolvedCustomerName || 'Customer',
         service: job.serviceId || providerProfile.service || 'Service',
         scheduledAt,
         rate: Number(job.financials?.grossPrice || job.quote?.grossPrice || 0),
@@ -471,7 +655,7 @@ export default function NearMeProviderDashboard({ focusSection = null }) {
       const bt = b.scheduledAt ? b.scheduledAt.getTime() : 0;
       return bt - at;
     });
-  }, [providerJobs, providerBookings, providerProfile.service]);
+  }, [providerJobs, providerBookings, providerProfile.service, providerConversations]);
   const hasTimeCollision = (scheduledAt, currentKey = '') => {
     if (!scheduledAt || Number.isNaN(new Date(scheduledAt).getTime())) return false;
     const targetTime = new Date(scheduledAt).getTime();
@@ -524,6 +708,15 @@ export default function NearMeProviderDashboard({ focusSection = null }) {
   const weeklyEarnings = bookingQueueRows
     .filter((booking) => ['completed', 'reviewed', 'Completed'].includes(booking.status))
     .reduce((sum, booking) => sum + Number(booking.rate || 0), 0);
+  const getQueueActionState = (row) => {
+    if (row.source !== 'job' || !row.raw?._id) return { type: 'none', label: '' };
+    const status = String(row.status || '').toLowerCase();
+    if (status === 'accepted') return { type: 'start', label: 'Not Started' };
+    if (status === 'in progress') return { type: 'done', label: 'In Progress' };
+    if (status === 'pending payment') return { type: 'cashPaid', label: 'Pending Payment' };
+    if (status === 'completed') return { type: 'doneState', label: 'Paid' };
+    return { type: 'none', label: row.status || 'N/A' };
+  };
   const inquiryRequests = useMemo(() => (
     providerConversations
       .map((conversation) => {
@@ -538,10 +731,22 @@ export default function NearMeProviderDashboard({ focusSection = null }) {
     providerConversations.filter((conversation) => !parseInquiryCard(conversation.lastMessage || ''))
   ), [providerConversations]);
 
-  const acceptInquiryRequest = async ({ conversation, inquiry }) => {
+  const openInquiryQuote = (conversation, inquiry) => {
+    setInquiryQuoteForm({ price: '', inclusions: '', breakdown: '', description: '' });
+    setInquiryQuoteModal({ open: true, conversation, inquiry });
+  };
+
+  const closeInquiryQuote = () => {
+    setInquiryQuoteModal({ open: false, conversation: null, inquiry: null });
+    setInquiryQuoteForm({ price: '', inclusions: '', breakdown: '', description: '' });
+  };
+
+  const acceptInquiryRequest = async ({ conversation, inquiry, quotedPrice = null, quoteBreakdown = '', quoteInclusions = [], quoteDescription = '' }) => {
     if (acceptingInquiryId) return;
     setAcceptingInquiryId(String(conversation?._id || 'pending'));
     try {
+      const selectedPrice = getSelectedPrice(inquiry);
+      const resolvedQuotedPrice = Number.isFinite(Number(quotedPrice)) && Number(quotedPrice) > 0 ? Number(quotedPrice) : selectedPrice;
       const payload = {
         clientUserId: conversation.customerUserId,
         providerId: providerPublicId(providerProfile),
@@ -553,6 +758,10 @@ export default function NearMeProviderDashboard({ focusSection = null }) {
         inquiryMessageId: conversation.lastMessageId || inquiry.inquiryId || null,
         conversationId: conversation._id,
         inquiryPayload: inquiry,
+        quotedPrice: resolvedQuotedPrice > 0 ? resolvedQuotedPrice : null,
+        quoteBreakdown: String(quoteBreakdown || '').trim(),
+        quoteInclusions: Array.isArray(quoteInclusions) ? quoteInclusions : [],
+        quoteDescription: String(quoteDescription || '').trim(),
       };
       let created;
       try {
@@ -572,25 +781,68 @@ export default function NearMeProviderDashboard({ focusSection = null }) {
         if (exists) return current;
         return [created, ...current];
       });
+      const responseText = `INQUIRY_RESPONSE::${JSON.stringify({
+        inquiryMessageId: payload.inquiryMessageId || String(inquiry?.inquiryId || ''),
+        decision: 'accepted',
+        serviceCategory: inquiry?.serviceCategory || 'other',
+        quotedPrice: resolvedQuotedPrice > 0 ? resolvedQuotedPrice : 0,
+        currency: 'PHP',
+        inclusions: Array.isArray(quoteInclusions) ? quoteInclusions : [],
+        breakdown: String(quoteBreakdown || '').trim() || (resolvedQuotedPrice > 0 ? `Quoted price: PHP ${resolvedQuotedPrice.toLocaleString('en-PH')}` : 'Accepted'),
+        description: String(quoteDescription || '').trim(),
+      })}`;
+      await apiRequest(`/api/conversations/${conversation._id}/messages`, {
+        method: 'POST',
+        body: JSON.stringify({ text: responseText }),
+      });
+      triggerRefresh();
       toast.success('Inquiry accepted and added to your calendar');
+      return true;
     } catch (error) {
       const message = String(error.message || '');
       if (message.includes('COLLISION_DETECTED')) {
         toast.error('Schedule collision detected. Adjust to another time before accepting.');
-        return;
+        return false;
       }
       if (message.includes('OUTSIDE_PROVIDER_AVAILABILITY')) {
         toast.error('This request is on an off-day based on your availability settings.');
-        return;
+        return false;
       }
       if (message.includes('OUTSIDE_PROVIDER_WORKING_HOURS')) {
         toast.error('This request time is outside your configured working hours.');
-        return;
+        return false;
       }
       toast.error(error.message || 'Could not accept inquiry');
+      return false;
     } finally {
       setAcceptingInquiryId('');
     }
+  };
+
+  const submitInquiryQuote = async () => {
+    if (!inquiryQuoteModal.conversation || !inquiryQuoteModal.inquiry) return;
+    const price = Number(inquiryQuoteForm.price);
+    if (!Number.isFinite(price) || price <= 0) {
+      toast.error('Please enter a valid quoted price.');
+      return;
+    }
+    if (!inquiryQuoteForm.breakdown.trim()) {
+      toast.error('Please add a price breakdown.');
+      return;
+    }
+    const inclusions = inquiryQuoteForm.inclusions
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean);
+    const accepted = await acceptInquiryRequest({
+      conversation: inquiryQuoteModal.conversation,
+      inquiry: inquiryQuoteModal.inquiry,
+      quotedPrice: price,
+      quoteBreakdown: inquiryQuoteForm.breakdown.trim(),
+      quoteInclusions: inclusions,
+      quoteDescription: inquiryQuoteForm.description.trim(),
+    });
+    if (accepted) closeInquiryQuote();
   };
 
   const evaluateInquiryAvailability = (inquiry) => {
@@ -638,40 +890,6 @@ export default function NearMeProviderDashboard({ focusSection = null }) {
         raw: row.raw,
       }))
   ), [bookingQueueRows, providerProfile.service]);
-  const stateDrivenJobs = useMemo(() => (
-    bookingQueueRows
-      .filter((row) => {
-        const status = String(row?.status || '').toLowerCase();
-        return [
-          'accepted',
-          'in progress',
-          'pending payment',
-          'pending verification',
-          'requested',
-          'provider_accepted',
-          'in_progress',
-        ].includes(status);
-      })
-      .map((row) => {
-        if (row.source === 'job') return row.raw;
-        return {
-          _id: row.sourceId,
-          source: row.source,
-          status: row.status || 'requested',
-          jobNumber: row.sourceId ? `Booking ${String(row.sourceId).slice(-6)}` : 'Booking',
-          serviceId: row.service || providerProfile.service || 'Service',
-          financials: { grossPrice: Number(row.rate || 0) },
-          appointment: row.scheduledAt
-            ? {
-                bookingDate: new Date(row.scheduledAt).toISOString().slice(0, 10),
-                bookingTime: new Date(row.scheduledAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-              }
-            : null,
-          payment: {},
-        };
-      })
-  ), [bookingQueueRows, providerProfile.service]);
-
   const isWorkingDay = (date) => {
     const dateObj = new Date(date);
     const dateKey = dateObj.toISOString().slice(0, 10);
@@ -738,6 +956,7 @@ export default function NearMeProviderDashboard({ focusSection = null }) {
         workingHours: updated.workingHours || current.workingHours,
         availabilityOverrides: updated.availabilityOverrides && typeof updated.availabilityOverrides === 'object' ? updated.availabilityOverrides : current.availabilityOverrides,
       }));
+      triggerRefresh();
       return true;
     } catch (error) {
       toast.error(error.message || 'Could not save availability');
@@ -748,11 +967,14 @@ export default function NearMeProviderDashboard({ focusSection = null }) {
   const selectedCertifications = useMemo(() => textToList(settingsForm.certifications), [settingsForm.certifications]);
   const selectedFixedCategories = useMemo(() => textToList(fixedForm.category), [fixedForm.category]);
   const addFixedCategory = () => {
-    const next = toTitleCase(fixedCategoryPickerValue);
+    const next = fixedCategoryPickerValue === 'other'
+      ? toTitleCase(customFixedCategoryInput)
+      : toTitleCase(fixedCategoryPickerValue);
     if (!next) return;
     const merged = Array.from(new Set([...selectedFixedCategories, next]));
     setFixedForm((current) => ({ ...current, category: merged.join(', ') }));
     setFixedCategoryPickerValue('');
+    setCustomFixedCategoryInput('');
   };
   const removeFixedCategory = (value) => {
     const filtered = selectedFixedCategories.filter((item) => item !== value);
@@ -760,6 +982,9 @@ export default function NearMeProviderDashboard({ focusSection = null }) {
   };
   const addProviderCategory = () => {
     if (settingsCategoryPickerValue === 'other') {
+      if (customCategoryInput.trim()) {
+        addCustomProviderCategory();
+      }
       updateSetting('serviceId', 'other');
       return;
     }
@@ -784,11 +1009,14 @@ export default function NearMeProviderDashboard({ focusSection = null }) {
     setCustomCategoryInput(next);
   };
   const addTag = () => {
-    const next = toTitleCase(tagPickerValue);
+    const next = tagPickerValue === 'other'
+      ? toTitleCase(customTagInput)
+      : toTitleCase(tagPickerValue);
     if (!next) return;
     const merged = Array.from(new Set([...selectedProviderCategories, next]));
     updateSetting('tags', merged.join(', '));
     setTagPickerValue('');
+    setCustomTagInput('');
   };
   const removeTag = (value) => {
     const filtered = selectedProviderCategories.filter((item) => item !== value);
@@ -847,7 +1075,7 @@ export default function NearMeProviderDashboard({ focusSection = null }) {
     if (title.length < 5 || title.length > 50) errors.title = 'Service title must be 5 to 50 characters.';
     if (!fixedForm.category.trim()) errors.category = 'Category is required.';
     const price = Number(fixedForm.price);
-    if (!Number.isFinite(price) || price < 150) errors.price = 'Price must be at least PHP 150.';
+    if (!Number.isFinite(price) || price < 1) errors.price = 'Price must be greater than PHP 1.';
     const hours = Number(fixedForm.durationHours);
     const minutes = Number(fixedForm.durationMinutes);
     if ((hours === 0 && minutes === 0) || !Number.isFinite(hours) || !Number.isFinite(minutes)) errors.duration = 'Duration cannot be 0 hours and 0 minutes.';
@@ -919,6 +1147,7 @@ export default function NearMeProviderDashboard({ focusSection = null }) {
       });
       toast.success(`Service ${editingFixedId ? 'updated' : 'created'}`);
       resetFixedForm();
+      triggerRefresh();
     } catch (error) {
       toast.error(error.message || 'Could not save service');
     } finally {
@@ -952,6 +1181,7 @@ export default function NearMeProviderDashboard({ focusSection = null }) {
       });
       toast.success(`Bundle ${editingBundleId ? 'updated' : 'created'}`);
       resetBundleForm();
+      triggerRefresh();
     } catch (error) {
       toast.error(error.message || 'Could not save bundle');
     } finally {
@@ -966,6 +1196,7 @@ export default function NearMeProviderDashboard({ focusSection = null }) {
         body: JSON.stringify({ active: !item.active }),
       });
       setFixedServices((current) => current.map((service) => (String(service._id) === String(updated._id) ? updated : service)));
+      triggerRefresh();
     } catch (error) {
       toast.error(error.message || 'Could not update service');
     }
@@ -978,29 +1209,38 @@ export default function NearMeProviderDashboard({ focusSection = null }) {
         body: JSON.stringify({ active: !item.active }),
       });
       setBundlePlans((current) => current.map((plan) => (String(plan._id) === String(updated._id) ? updated : plan)));
+      triggerRefresh();
     } catch (error) {
       toast.error(error.message || 'Could not update bundle');
     }
   };
 
-  const deleteFixedService = async (item) => {
-    if (!window.confirm('Delete this fixed service?')) return;
-    try {
-      await apiRequest(`/api/v1/provider-services/${item._id}`, { method: 'DELETE' });
-      setFixedServices((current) => current.filter((service) => String(service._id) !== String(item._id)));
-    } catch (error) {
-      toast.error(error.message || 'Could not delete service');
-    }
+  const deleteFixedService = (item) => {
+    openConfirmAction({
+      title: 'Delete Fixed Service',
+      message: `Delete "${item.title || 'this service'}"? This action cannot be undone.`,
+      confirmLabel: 'Delete Service',
+      action: async () => {
+        await apiRequest(`/api/v1/provider-services/${item._id}`, { method: 'DELETE' });
+        setFixedServices((current) => current.filter((service) => String(service._id) !== String(item._id)));
+        triggerRefresh();
+        toast.success('Service deleted');
+      },
+    });
   };
 
-  const deleteBundlePlan = async (item) => {
-    if (!window.confirm('Delete this bundle plan?')) return;
-    try {
-      await apiRequest(`/api/v1/custom-packages/${item._id}`, { method: 'DELETE' });
-      setBundlePlans((current) => current.filter((plan) => String(plan._id) !== String(item._id)));
-    } catch (error) {
-      toast.error(error.message || 'Could not delete bundle');
-    }
+  const deleteBundlePlan = (item) => {
+    openConfirmAction({
+      title: 'Delete Bundle Plan',
+      message: `Delete "${item.title || 'this bundle'}"? This action cannot be undone.`,
+      confirmLabel: 'Delete Bundle',
+      action: async () => {
+        await apiRequest(`/api/v1/custom-packages/${item._id}`, { method: 'DELETE' });
+        setBundlePlans((current) => current.filter((plan) => String(plan._id) !== String(item._id)));
+        triggerRefresh();
+        toast.success('Bundle deleted');
+      },
+    });
   };
 
   const uploadProviderAvatar = async (e) => {
@@ -1045,10 +1285,17 @@ export default function NearMeProviderDashboard({ focusSection = null }) {
   };
 
   const removeGalleryImage = (url) => {
-    setSettingsForm((current) => ({
-      ...current,
-      gallery: listToText(textToList(current.gallery).filter((item) => item !== url)),
-    }));
+    openConfirmAction({
+      title: 'Remove Gallery Image',
+      message: 'This photo will be removed from your profile gallery after you save settings.',
+      confirmLabel: 'Remove Photo',
+      action: async () => {
+        setSettingsForm((current) => ({
+          ...current,
+          gallery: listToText(textToList(current.gallery).filter((item) => item !== url)),
+        }));
+      },
+    });
   };
 
   const useCurrentLocation = () => {
@@ -1117,6 +1364,7 @@ export default function NearMeProviderDashboard({ focusSection = null }) {
         body: JSON.stringify({ available: nextAvailable }),
       });
       setProviderProfile((current) => ({ ...current, ...updated }));
+      triggerRefresh();
     } catch (error) {
       setAvailable(!nextAvailable);
       toast.error(error.message || 'Could not update availability');
@@ -1146,18 +1394,10 @@ export default function NearMeProviderDashboard({ focusSection = null }) {
         setProfileSaving(false);
         return;
       }
-      const startTime = String(settingsForm.workingHours?.start || '08:00');
-      const endTime = String(settingsForm.workingHours?.end || '18:00');
-      if (startTime >= endTime) {
-        toast.error('Working hours are invalid. End time must be later than start time.');
-        setProfileSaving(false);
-        return;
-      }
       const payload = {
         name: settingsForm.name,
         service: serviceName,
         serviceId,
-        rate: Number(settingsForm.rate || 0),
         location: settingsForm.location,
         coordinates: settingsForm.coordinates,
         serviceArea: settingsForm.serviceArea,
@@ -1166,12 +1406,6 @@ export default function NearMeProviderDashboard({ focusSection = null }) {
         certifications: textToList(settingsForm.certifications),
         gallery: textToList(settingsForm.gallery),
         avatar: settingsForm.avatar,
-        availabilityDays: Array.isArray(settingsForm.availabilityDays) ? settingsForm.availabilityDays : [],
-        workingHours: {
-          start: startTime,
-          end: endTime,
-        },
-        availabilityOverrides: settingsForm.availabilityOverrides && typeof settingsForm.availabilityOverrides === 'object' ? settingsForm.availabilityOverrides : {},
       };
 
       const updated = await apiRequest(`/api/providers/${providerPublicId(providerProfile)}`, {
@@ -1186,11 +1420,9 @@ export default function NearMeProviderDashboard({ focusSection = null }) {
         service: serviceName,
         serviceId,
         tags: providerCategories.join(', '),
-        availabilityDays: merged.availabilityDays || current.availabilityDays,
-        workingHours: merged.workingHours || current.workingHours,
-        availabilityOverrides: merged.availabilityOverrides || current.availabilityOverrides,
       }));
       mergeStoredNearMeUser({ avatar: merged.avatar || '' });
+      triggerRefresh();
       toast.success('Provider profile updated');
     } catch (error) {
       toast.error(error.message || 'Could not save settings');
@@ -1254,11 +1486,12 @@ export default function NearMeProviderDashboard({ focusSection = null }) {
             </div>
             {[
               ['Dashboard', CalendarDays, '/provider-dashboard'],
-              ['Calendar', Clock, '/provider-dashboard'],
-              ['Bookings', FileCheck2, '/provider-dashboard'],
+              ['Calendar', Clock, '/provider-dashboard/calendar'],
+              ['Bookings', FileCheck2, '/provider-dashboard/bookings'],
               ['Chat History', MessageSquareText, '/provider-dashboard/chat-history'],
+              ['Pricing', WalletCards, '/provider-dashboard/pricing'],
+              ['Reviews', Star, '/provider-dashboard/reviews'],
               ['Settings', Settings, '/provider-dashboard/settings'],
-              ['Pricing', WalletCards, '/provider-dashboard'],
             ].map(([label, Icon, href]) => (
               <Link key={label} to={href} className="flex items-center gap-2 px-4 py-3 border-b-2 border-bauhaus-ink/10 font-bold text-xs uppercase tracking-wider text-bauhaus-ink hover:bg-bauhaus-yellow/30">
                 <Icon className="h-4 w-4" />
@@ -1308,26 +1541,28 @@ export default function NearMeProviderDashboard({ focusSection = null }) {
               </section>
             )}
 
-            {!isSettingsOnly && (
+            {(isCalendarView || isChatView) && (
               <div className="space-y-3">
-              <div className="inline-flex border-2 border-bauhaus-ink bg-white">
-                <button
-                  type="button"
-                  onClick={() => setWorkTab('calendar')}
-                  className={`px-4 py-2 font-black text-[10px] uppercase tracking-wider border-r-2 border-bauhaus-ink ${workTab === 'calendar' ? 'bg-bauhaus-yellow text-bauhaus-ink' : 'bg-white text-bauhaus-ink'}`}
-                >
-                  Calendar
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setWorkTab('chat')}
-                  className={`px-4 py-2 font-black text-[10px] uppercase tracking-wider ${workTab === 'chat' ? 'bg-bauhaus-yellow text-bauhaus-ink' : 'bg-white text-bauhaus-ink'}`}
-                >
-                  Chat History
-                </button>
-              </div>
+              {isOverview && (
+                <div className="inline-flex border-2 border-bauhaus-ink bg-white">
+                  <button
+                    type="button"
+                    onClick={() => setWorkTab('calendar')}
+                    className={`px-4 py-2 font-black text-[10px] uppercase tracking-wider border-r-2 border-bauhaus-ink ${workTab === 'calendar' ? 'bg-bauhaus-yellow text-bauhaus-ink' : 'bg-white text-bauhaus-ink'}`}
+                  >
+                    Calendar
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setWorkTab('chat')}
+                    className={`px-4 py-2 font-black text-[10px] uppercase tracking-wider ${workTab === 'chat' ? 'bg-bauhaus-yellow text-bauhaus-ink' : 'bg-white text-bauhaus-ink'}`}
+                  >
+                    Chat History
+                  </button>
+                </div>
+              )}
 
-              {workTab === 'calendar' && (
+              {showCalendarPanel && (
                 <Panel
                   title="Work Management Calendar"
                   icon={CalendarDays}
@@ -1405,7 +1640,7 @@ export default function NearMeProviderDashboard({ focusSection = null }) {
                 </Panel>
               )}
 
-              {workTab === 'chat' && (
+              {showChatPanel && (
                 <Panel title="Chat History" icon={MessageSquareText}>
                 <div id="chat-history" className="space-y-3">
                   {inquiryRequests.length > 0 && (
@@ -1433,7 +1668,15 @@ export default function NearMeProviderDashboard({ focusSection = null }) {
                           <button
                             type="button"
                             disabled={acceptingInquiryId === String(conversation._id)}
-                            onClick={(e) => { e.preventDefault(); e.stopPropagation(); acceptInquiryRequest({ conversation, inquiry }); }}
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              if (isOtherInquiry(inquiry) && !isFixedOrBundleSelection(inquiry)) {
+                                openInquiryQuote(conversation, inquiry);
+                                return;
+                              }
+                              acceptInquiryRequest({ conversation, inquiry });
+                            }}
                             className="mt-2 inline-flex items-center gap-1 px-3 py-2 bg-bauhaus-red text-white border-2 border-bauhaus-ink font-black text-[10px] uppercase tracking-wider disabled:opacity-60"
                           >
                             <Plus className="h-3.5 w-3.5" />
@@ -1469,13 +1712,13 @@ export default function NearMeProviderDashboard({ focusSection = null }) {
               </div>
             )}
 
-            {!isFocusedView && (
+            {isBookingsView && (
               <Panel title="Booking Queue" icon={FileCheck2}>
               <div id="bookings" className="overflow-x-auto">
                 <table className="w-full min-w-[680px] border-collapse">
                   <thead>
                     <tr className="bg-bauhaus-ink text-white">
-                      {['Client', 'Service', 'Date', 'Time', 'Rate', 'Status'].map((head) => (
+                      {['Client', 'Service', 'Date', 'Time', 'Rate', 'Status', 'Action'].map((head) => (
                         <th key={head} className="px-3 py-3 text-left font-black text-[10px] uppercase tracking-wider border-2 border-bauhaus-ink">{head}</th>
                       ))}
                     </tr>
@@ -1493,11 +1736,73 @@ export default function NearMeProviderDashboard({ focusSection = null }) {
                         <td className="px-3 py-3 border-2 border-bauhaus-ink font-bold text-xs">{formatBookingTime(booking.scheduledAt)}</td>
                         <td className="px-3 py-3 border-2 border-bauhaus-ink font-bold text-xs">PHP {Number(booking.rate || 0).toLocaleString('en-PH')}</td>
                         <td className="px-3 py-3 border-2 border-bauhaus-ink"><StatusPill tone="yellow">{booking.status}</StatusPill></td>
+                        <td className="px-3 py-3 border-2 border-bauhaus-ink">
+                          {(() => {
+                            const action = getQueueActionState(booking);
+                            if (action.type === 'start') {
+                              return (
+                                <button
+                                  type="button"
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    runJobAction(booking.raw._id, 'start-work');
+                                  }}
+                                  className="px-3 py-2 bg-bauhaus-blue text-white border-2 border-bauhaus-ink font-black text-[10px] uppercase tracking-wider"
+                                >
+                                  Start Work
+                                </button>
+                              );
+                            }
+                            if (action.type === 'done') {
+                              return (
+                                <button
+                                  type="button"
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    openMarkDoneModal(booking.raw);
+                                  }}
+                                  className="px-3 py-2 bg-bauhaus-red text-white border-2 border-bauhaus-ink font-black text-[10px] uppercase tracking-wider"
+                                >
+                                  Mark as Done
+                                </button>
+                              );
+                            }
+                            if (action.type === 'cashPaid') {
+                              return (
+                                <button
+                                  type="button"
+                                  onClick={async (event) => {
+                                    event.stopPropagation();
+                                    try {
+                                      const updated = await apiRequest(`/api/v1/jobs/${booking.raw._id}/payment/cash-confirm`, {
+                                        method: 'PATCH',
+                                        body: JSON.stringify({
+                                          providerConfirm: true,
+                                          clientConfirm: true,
+                                          confirmedAmount: Number(booking.rate || 0),
+                                        }),
+                                      });
+                                      setProviderJobs((current) => current.map((item) => (String(item._id) === String(updated._id) ? updated : item)));
+                                      triggerRefresh();
+                                      toast.success('Cash payment confirmed');
+                                    } catch (error) {
+                                      toast.error(error.message || 'Could not confirm cash payment');
+                                    }
+                                  }}
+                                  className="px-3 py-2 bg-white text-bauhaus-ink border-2 border-bauhaus-ink font-black text-[10px] uppercase tracking-wider"
+                                >
+                                  Mark Cash Paid
+                                </button>
+                              );
+                            }
+                            return <span className="font-black text-[10px] uppercase tracking-wider text-bauhaus-ink/50">{action.label}</span>;
+                          })()}
+                        </td>
                       </tr>
                     ))}
                     {bookingQueueRows.length === 0 && (
                       <tr className="bg-white">
-                        <td colSpan={6} className="px-3 py-6 border-2 border-bauhaus-ink text-center font-black text-xs uppercase tracking-wider text-bauhaus-ink/45">No bookings yet</td>
+                        <td colSpan={7} className="px-3 py-6 border-2 border-bauhaus-ink text-center font-black text-xs uppercase tracking-wider text-bauhaus-ink/45">No bookings yet</td>
                       </tr>
                     )}
                   </tbody>
@@ -1506,103 +1811,7 @@ export default function NearMeProviderDashboard({ focusSection = null }) {
               </Panel>
             )}
 
-            {!isFocusedView && (
-              <Panel title="State-Driven Job Controls" icon={AlertTriangle}>
-              <div className="space-y-3">
-                {stateDrivenJobs.map((job) => (
-                  <div key={job._id} className="border-2 border-bauhaus-ink bg-white p-4">
-                    {job.status === 'Pending Verification' && (
-                      <div className="mb-3 border-2 border-bauhaus-red bg-bauhaus-yellow p-3 animate-pulse">
-                        <div className="font-black text-[10px] uppercase tracking-wider text-bauhaus-ink">Pending Verification</div>
-                        <div className="mt-1 font-bold text-xs text-bauhaus-ink">Client submitted payment proof. Review before confirming.</div>
-                        {job.payment?.proofUrl && (
-                          <a href={job.payment.proofUrl} target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-2 font-black text-[10px] uppercase tracking-wider text-bauhaus-red underline">
-                            View QR Screenshot
-                          </a>
-                        )}
-                      </div>
-                    )}
-                    <div className="flex items-center justify-between gap-2">
-                      <div>
-                        <div className="font-black text-xs uppercase tracking-tight text-bauhaus-ink">{job.jobNumber || `Job ${String(job._id).slice(-6)}`}</div>
-                        <div className="font-bold text-[10px] uppercase tracking-wider text-bauhaus-ink/50">{job.status}</div>
-                      </div>
-                      <div className="font-black text-xs text-bauhaus-ink">PHP {Number(job.financials?.grossPrice || 0).toLocaleString('en-PH')}</div>
-                    </div>
-
-                    <div className="mt-3 flex flex-wrap gap-2">
-                      {job.status === 'Accepted' && job.source !== 'booking' && (
-                        <>
-                          <button type="button" onClick={() => runJobAction(job._id, 'start-work')} className="px-3 py-2 bg-bauhaus-blue text-white border-2 border-bauhaus-ink font-black text-[10px] uppercase tracking-wider">
-                            Start Work
-                          </button>
-                          <button type="button" onClick={() => runJobAction(job._id, 'cancel', { reason: 'Cancelled by provider before work started' })} className="px-3 py-2 bg-white text-bauhaus-red border-2 border-bauhaus-ink font-black text-[10px] uppercase tracking-wider">
-                            Cancel Job
-                          </button>
-                        </>
-                      )}
-
-                      {job.status === 'In Progress' && job.source !== 'booking' && (
-                        <>
-                          <button type="button" onClick={() => runJobAction(job._id, 'request-payment', { workSummary: 'Marked as done by provider' })} className="px-3 py-2 bg-bauhaus-red text-white border-2 border-bauhaus-ink font-black text-[10px] uppercase tracking-wider">
-                            Mark as Done
-                          </button>
-                          <button type="button" disabled title="Cancellation is unavailable after work has commenced." className="px-3 py-2 bg-white text-bauhaus-ink/40 border-2 border-bauhaus-ink font-black text-[10px] uppercase tracking-wider cursor-not-allowed">
-                            Cancel Job Locked
-                          </button>
-                        </>
-                      )}
-
-                      {job.status === 'Pending Verification' && job.source !== 'booking' && (
-                        <button
-                          type="button"
-                          onClick={async () => {
-                            try {
-                              const updated = await apiRequest(`/api/v1/admin/jobs/${job._id}/verify-payment`, {
-                                method: 'PATCH',
-                                body: JSON.stringify({ decision: 'approve', note: 'Verified from provider dashboard' }),
-                              });
-                              setProviderJobs((current) => current.map((item) => (String(item._id) === String(updated._id) ? updated : item)));
-                              toast.success('Payment verified and confirmed');
-                            } catch (error) {
-                              toast.error(error.message || 'Could not verify payment');
-                            }
-                          }}
-                          className="px-3 py-2 bg-bauhaus-red text-white border-2 border-bauhaus-ink font-black text-[10px] uppercase tracking-wider"
-                        >
-                          Verify & Confirm Payment
-                        </button>
-                      )}
-                      {job.source === 'booking' && String(job.status || '').toLowerCase() === 'requested' && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            const row = bookingQueueRows.find((item) => String(item.sourceId) === String(job._id) && item.source === 'booking');
-                            if (row) acceptBookingRequest(row);
-                          }}
-                          className="px-3 py-2 bg-bauhaus-blue text-white border-2 border-bauhaus-ink font-black text-[10px] uppercase tracking-wider"
-                        >
-                          Accept Booking
-                        </button>
-                      )}
-                      {job.source === 'booking' && String(job.status || '').toLowerCase() !== 'requested' && (
-                        <div className="px-3 py-2 bg-white text-bauhaus-ink/60 border-2 border-bauhaus-ink font-black text-[10px] uppercase tracking-wider">
-                          Booking status: {job.status}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                ))}
-                {stateDrivenJobs.length === 0 && (
-                  <div className="border-2 border-dashed border-bauhaus-ink bg-white p-6 text-center font-black text-xs uppercase tracking-wider text-bauhaus-ink/45">
-                    No state-managed jobs yet
-                  </div>
-                )}
-              </div>
-              </Panel>
-            )}
-
-            {!isFocusedView && (
+            {isReviewsView && (
               <Panel title="All Reviews" icon={Star}>
               <div className="space-y-3">
                 {providerReviews.map((review, index) => (
@@ -1630,7 +1839,7 @@ export default function NearMeProviderDashboard({ focusSection = null }) {
               </Panel>
             )}
 
-            {!isFocusedView && (
+            {isPricingView && (
               <Panel
               title="Service Management"
               icon={WalletCards}
@@ -1696,9 +1905,29 @@ export default function NearMeProviderDashboard({ focusSection = null }) {
                                   {categoryDropdownOptions.filter((item) => item.value !== 'other').map((item) => (
                                     <option key={`fixed-category-${item.value}`} value={item.label}>{item.label}</option>
                                   ))}
+                                  <option value="other">Others</option>
                                 </select>
                                 <button type="button" onClick={addFixedCategory} className="px-3 py-2 bg-bauhaus-blue text-white border-2 border-bauhaus-ink font-black text-[10px] uppercase tracking-wider">Add</button>
                               </div>
+                              {fixedCategoryPickerValue === 'other' && (
+                                <div className="mt-2 flex gap-2">
+                                  <input
+                                    type="text"
+                                    value={customFixedCategoryInput}
+                                    onChange={(e) => setCustomFixedCategoryInput(e.target.value)}
+                                    onBlur={() => setCustomFixedCategoryInput(toTitleCase(customFixedCategoryInput))}
+                                    onKeyDown={(e) => {
+                                      if (e.key === 'Enter') {
+                                        e.preventDefault();
+                                        addFixedCategory();
+                                      }
+                                    }}
+                                    placeholder="Enter custom category"
+                                    className="w-full px-3 py-2 border-2 border-bauhaus-ink bg-white font-bold text-sm outline-none focus:border-bauhaus-blue"
+                                  />
+                                  <button type="button" onClick={addFixedCategory} className="px-3 py-2 bg-bauhaus-blue text-white border-2 border-bauhaus-ink font-black text-[10px] uppercase tracking-wider">Add</button>
+                                </div>
+                              )}
                             </div>
                             <div className="mt-2 border border-dashed border-bauhaus-ink p-2 font-black text-xs text-bauhaus-ink min-h-[44px]">
                               {selectedFixedCategories.length > 0 ? selectedFixedCategories.join(', ') : 'No selected categories'}
@@ -1708,6 +1937,9 @@ export default function NearMeProviderDashboard({ focusSection = null }) {
                           <label className="block">
                             <span className="font-black text-[10px] uppercase tracking-wider text-bauhaus-ink/55">Fixed Price Amount (PHP)</span>
                             <input
+                              type="number"
+                              min="2"
+                              step="1"
                               value={fixedForm.price}
                               onKeyDown={(e) => { if (!['Backspace', 'Tab', 'ArrowLeft', 'ArrowRight', 'Delete'].includes(e.key) && !/[0-9]/.test(e.key)) e.preventDefault(); }}
                               onChange={(e) => setFixedForm((c) => ({ ...c, price: e.target.value.replace(/[^\d]/g, '') }))}
@@ -1877,7 +2109,7 @@ export default function NearMeProviderDashboard({ focusSection = null }) {
               </Panel>
             )}
 
-            {!isChatOnly && (
+            {isSettingsView && (
               <Panel
               title="Settings"
               icon={Settings}
@@ -1986,54 +2218,9 @@ export default function NearMeProviderDashboard({ focusSection = null }) {
                           <span className="font-black text-[10px] uppercase tracking-wider text-bauhaus-ink/55">Service Area</span>
                           <input value={settingsForm.serviceArea} onChange={(e) => updateSetting('serviceArea', e.target.value)} className="mt-1 w-full px-3 py-3 border-2 border-bauhaus-ink bg-white font-bold text-sm outline-none focus:border-bauhaus-blue" />
                         </label>
-                        <label className="block">
-                          <span className="font-black text-[10px] uppercase tracking-wider text-bauhaus-ink/55">Hourly Rate</span>
-                          <div className="mt-1 flex border-2 border-bauhaus-ink bg-white">
-                            <span className="px-3 py-3 bg-bauhaus-yellow border-r-2 border-bauhaus-ink font-black text-xs">PHP</span>
-                            <input type="number" min="0" value={settingsForm.rate} onChange={(e) => updateSetting('rate', Number(e.target.value))} className="w-full min-w-0 px-3 py-3 font-bold text-sm outline-none" />
-                          </div>
-                        </label>
-                        <label className="block sm:col-span-2">
-                          <span className="font-black text-[10px] uppercase tracking-wider text-bauhaus-ink/55">Working Days</span>
-                          <div className="mt-1 grid grid-cols-4 sm:grid-cols-7 gap-2">
-                            {weekdayKeys.map((dayKey, idx) => {
-                              const active = (settingsForm.availabilityDays || []).includes(dayKey);
-                              return (
-                                <button
-                                  key={dayKey}
-                                  type="button"
-                                  onClick={() => {
-                                    const current = Array.isArray(settingsForm.availabilityDays) ? settingsForm.availabilityDays : [];
-                                    const next = active ? current.filter((item) => item !== dayKey) : [...current, dayKey];
-                                    updateSetting('availabilityDays', next);
-                                  }}
-                                  className={`px-2 py-2 border-2 border-bauhaus-ink font-black text-[10px] uppercase tracking-wider ${active ? 'bg-bauhaus-blue text-white' : 'bg-white text-bauhaus-ink'}`}
-                                >
-                                  {calendarWeekdays[idx]}
-                                </button>
-                              );
-                            })}
-                          </div>
-                        </label>
-                        <div className="sm:col-span-2 grid grid-cols-1 sm:grid-cols-2 gap-3">
-                          <label className="block">
-                            <span className="font-black text-[10px] uppercase tracking-wider text-bauhaus-ink/55">Start Time</span>
-                            <input
-                              type="time"
-                              value={settingsForm.workingHours?.start || '08:00'}
-                              onChange={(e) => updateSetting('workingHours', { ...(settingsForm.workingHours || {}), start: e.target.value })}
-                              className="mt-1 w-full px-3 py-3 border-2 border-bauhaus-ink bg-white font-bold text-sm outline-none focus:border-bauhaus-blue"
-                            />
-                          </label>
-                          <label className="block">
-                            <span className="font-black text-[10px] uppercase tracking-wider text-bauhaus-ink/55">End Time</span>
-                            <input
-                              type="time"
-                              value={settingsForm.workingHours?.end || '18:00'}
-                              onChange={(e) => updateSetting('workingHours', { ...(settingsForm.workingHours || {}), end: e.target.value })}
-                              className="mt-1 w-full px-3 py-3 border-2 border-bauhaus-ink bg-white font-bold text-sm outline-none focus:border-bauhaus-blue"
-                            />
-                          </label>
+                        <div className="sm:col-span-2 border-2 border-bauhaus-ink bg-bauhaus-canvas p-3">
+                          <div className="font-black text-[10px] uppercase tracking-wider text-bauhaus-ink/55">Schedule Management</div>
+                          <div className="mt-1 font-medium text-xs text-bauhaus-ink/70">Working days and time blocks are managed in the Calendar page.</div>
                         </div>
                       </div>
                     </div>
@@ -2062,12 +2249,32 @@ export default function NearMeProviderDashboard({ focusSection = null }) {
                               className="w-full px-3 py-2 border-2 border-bauhaus-ink bg-white font-bold text-sm outline-none focus:border-bauhaus-blue"
                             >
                               <option value="">Select category</option>
-                              {categoryDropdownOptions.filter((item) => item.value !== 'other').map((item) => (
+                              {categoryDropdownOptions.map((item) => (
                                 <option key={`tag-${item.value}`} value={item.label}>{item.label}</option>
                               ))}
+                              <option value="other">Others</option>
                             </select>
                             <button type="button" onClick={addTag} className="px-3 py-2 bg-bauhaus-blue text-white border-2 border-bauhaus-ink font-black text-[10px] uppercase tracking-wider">Add</button>
                           </div>
+                          {tagPickerValue === 'other' && (
+                            <div className="mt-2 flex gap-2">
+                              <input
+                                type="text"
+                                value={customTagInput}
+                                onChange={(e) => setCustomTagInput(e.target.value)}
+                                onBlur={() => setCustomTagInput(toTitleCase(customTagInput))}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') {
+                                    e.preventDefault();
+                                    addTag();
+                                  }
+                                }}
+                                placeholder="Enter custom tag"
+                                className="w-full px-3 py-2 border-2 border-bauhaus-ink bg-white font-bold text-sm outline-none focus:border-bauhaus-blue"
+                              />
+                              <button type="button" onClick={addTag} className="px-3 py-2 bg-bauhaus-blue text-white border-2 border-bauhaus-ink font-black text-[10px] uppercase tracking-wider">Add</button>
+                            </div>
+                          )}
                         </div>
                         <div className="mt-2 border border-dashed border-bauhaus-ink p-2 font-black text-xs text-bauhaus-ink min-h-[44px]">
                           {selectedProviderCategories.length > 0 ? selectedProviderCategories.join(', ') : 'No selected tags'}
@@ -2170,6 +2377,32 @@ export default function NearMeProviderDashboard({ focusSection = null }) {
 
       <NearMeFooter />
       <Toaster position="top-center" />
+      {confirmAction.open && (
+        <div className="fixed inset-0 z-50 bg-bauhaus-ink/70 flex items-center justify-center px-4">
+          <div className="w-full max-w-md bg-white border-4 border-bauhaus-ink shadow-bauhaus-lg p-5">
+            <div className="font-black text-lg uppercase tracking-tight text-bauhaus-ink">{confirmAction.title || 'Confirm Action'}</div>
+            <p className="mt-2 font-medium text-sm text-bauhaus-ink/75">{confirmAction.message || 'Please confirm this action.'}</p>
+            <div className="mt-4 grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={closeConfirmAction}
+                disabled={confirmAction.busy}
+                className="px-4 py-2 bg-white border-2 border-bauhaus-ink font-black text-[10px] uppercase tracking-wider disabled:opacity-60"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={runConfirmAction}
+                disabled={confirmAction.busy}
+                className="px-4 py-2 bg-bauhaus-red text-white border-2 border-bauhaus-ink font-black text-[10px] uppercase tracking-wider disabled:opacity-60"
+              >
+                {confirmAction.busy ? 'Processing...' : (confirmAction.confirmLabel || 'Confirm')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {bookingDetail.open && bookingDetail.booking && (
         <div className="fixed inset-0 z-50 bg-bauhaus-ink/70 flex items-center justify-center px-4">
           <div className="w-full max-w-2xl bg-white border-4 border-bauhaus-ink shadow-bauhaus-lg p-5">
@@ -2209,6 +2442,122 @@ export default function NearMeProviderDashboard({ focusSection = null }) {
                   <div><span className="font-black text-bauhaus-ink">Notes:</span> {bookingDetail.booking.raw?.appointment?.notes || bookingDetail.booking.raw?.notes || 'N/A'}</div>
                 </div>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+      {doneModal.open && doneModal.job && (
+        <div className="fixed inset-0 z-50 bg-bauhaus-ink/70 flex items-center justify-center px-4">
+          <div className="w-full max-w-2xl bg-white border-4 border-bauhaus-ink shadow-bauhaus-lg p-5">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="font-black text-lg uppercase tracking-tight text-bauhaus-ink">Mark Job as Done</div>
+                <div className="font-bold text-xs uppercase tracking-wider text-bauhaus-ink/55">
+                  Add work proof. This will notify the client to pay.
+                </div>
+              </div>
+              <button type="button" onClick={closeMarkDoneModal} className="px-3 py-2 bg-white border-2 border-bauhaus-ink font-black text-[10px] uppercase tracking-wider">Close</button>
+            </div>
+            <div className="mt-4 space-y-3">
+              <div>
+                <div className="font-black text-[10px] uppercase tracking-wider text-bauhaus-ink/60">Work Summary</div>
+                <textarea
+                  rows={3}
+                  value={doneForm.summary}
+                  onChange={(event) => setDoneForm((current) => ({ ...current, summary: event.target.value }))}
+                  className="mt-1 w-full px-3 py-2 border-2 border-bauhaus-ink font-medium text-sm outline-none"
+                  placeholder="Describe completed work and key results"
+                />
+              </div>
+              <div>
+                <div className="font-black text-[10px] uppercase tracking-wider text-bauhaus-ink/60">Proof Images</div>
+                <input
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  onChange={(event) => setDoneForm((current) => ({ ...current, files: Array.from(event.target.files || []) }))}
+                  className="mt-1 w-full px-3 py-2 border-2 border-bauhaus-ink bg-white font-bold text-xs outline-none"
+                />
+                {doneForm.files.length > 0 && (
+                  <div className="mt-2 text-xs font-bold text-bauhaus-ink/70">{doneForm.files.length} image(s) selected</div>
+                )}
+              </div>
+            </div>
+            <div className="mt-4 grid grid-cols-2 gap-2">
+              <button type="button" onClick={closeMarkDoneModal} className="px-4 py-2 bg-white border-2 border-bauhaus-ink font-black text-[10px] uppercase tracking-wider">Cancel</button>
+              <button type="button" disabled={submittingDone} onClick={submitDoneWithProof} className="px-4 py-2 bg-bauhaus-red text-white border-2 border-bauhaus-ink font-black text-[10px] uppercase tracking-wider disabled:opacity-60">
+                {submittingDone ? 'Submitting...' : 'Submit and Request Payment'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {inquiryQuoteModal.open && inquiryQuoteModal.conversation && inquiryQuoteModal.inquiry && (
+        <div className="fixed inset-0 z-50 bg-bauhaus-ink/70 flex items-center justify-center px-4">
+          <div className="w-full max-w-2xl bg-white border-4 border-bauhaus-ink shadow-bauhaus-lg p-5">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="font-black text-lg uppercase tracking-tight text-bauhaus-ink">Custom Quote</div>
+                <div className="font-bold text-xs uppercase tracking-wider text-bauhaus-ink/55">Provide a professional quote for this custom request</div>
+              </div>
+              <button type="button" onClick={closeInquiryQuote} className="px-3 py-2 bg-white border-2 border-bauhaus-ink font-black text-[10px] uppercase tracking-wider">Close</button>
+            </div>
+
+            <div className="mt-4 border-2 border-bauhaus-ink bg-bauhaus-canvas p-3 text-xs font-medium text-bauhaus-ink/75 space-y-1">
+              <div><span className="font-black text-bauhaus-ink">Client:</span> {inquiryQuoteModal.conversation.customer?.name || 'Customer'}</div>
+              <div><span className="font-black text-bauhaus-ink">Category:</span> {inquiryQuoteModal.inquiry.serviceCategory || 'other'}</div>
+              <div><span className="font-black text-bauhaus-ink">Schedule:</span> {inquiryQuoteModal.inquiry.bookingDate} {inquiryQuoteModal.inquiry.bookingTime}</div>
+              <div><span className="font-black text-bauhaus-ink">Address:</span> {inquiryQuoteModal.inquiry.address || '-'}</div>
+            </div>
+
+            <div className="mt-4 space-y-3">
+              <label className="block">
+                <span className="font-black text-[10px] uppercase tracking-wider text-bauhaus-ink/60">Quoted Price (PHP)</span>
+                <input
+                  value={inquiryQuoteForm.price}
+                  onChange={(e) => setInquiryQuoteForm((current) => ({ ...current, price: e.target.value.replace(/[^\d]/g, '') }))}
+                  className="mt-1 w-full px-3 py-2 border-2 border-bauhaus-ink font-bold text-sm outline-none"
+                />
+              </label>
+              <label className="block">
+                <span className="font-black text-[10px] uppercase tracking-wider text-bauhaus-ink/60">Inclusions (one per line)</span>
+                <textarea
+                  rows={3}
+                  value={inquiryQuoteForm.inclusions}
+                  onChange={(e) => setInquiryQuoteForm((current) => ({ ...current, inclusions: e.target.value }))}
+                  className="mt-1 w-full px-3 py-2 border-2 border-bauhaus-ink font-medium text-sm outline-none resize-none"
+                />
+              </label>
+              <label className="block">
+                <span className="font-black text-[10px] uppercase tracking-wider text-bauhaus-ink/60">Price Breakdown</span>
+                <textarea
+                  rows={3}
+                  value={inquiryQuoteForm.breakdown}
+                  onChange={(e) => setInquiryQuoteForm((current) => ({ ...current, breakdown: e.target.value }))}
+                  className="mt-1 w-full px-3 py-2 border-2 border-bauhaus-ink font-medium text-sm outline-none resize-none"
+                />
+              </label>
+              <label className="block">
+                <span className="font-black text-[10px] uppercase tracking-wider text-bauhaus-ink/60">Scope Description</span>
+                <textarea
+                  rows={2}
+                  value={inquiryQuoteForm.description}
+                  onChange={(e) => setInquiryQuoteForm((current) => ({ ...current, description: e.target.value }))}
+                  className="mt-1 w-full px-3 py-2 border-2 border-bauhaus-ink font-medium text-sm outline-none resize-none"
+                />
+              </label>
+            </div>
+
+            <div className="mt-4 grid grid-cols-2 gap-2">
+              <button type="button" onClick={closeInquiryQuote} className="px-4 py-2 bg-white border-2 border-bauhaus-ink font-black text-[10px] uppercase tracking-wider">Cancel</button>
+              <button
+                type="button"
+                disabled={acceptingInquiryId === String(inquiryQuoteModal.conversation._id)}
+                onClick={submitInquiryQuote}
+                className="px-4 py-2 bg-bauhaus-red text-white border-2 border-bauhaus-ink font-black text-[10px] uppercase tracking-wider disabled:opacity-60"
+              >
+                {acceptingInquiryId === String(inquiryQuoteModal.conversation._id) ? 'Submitting...' : 'Submit Quote & Accept'}
+              </button>
             </div>
           </div>
         </div>

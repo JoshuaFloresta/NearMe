@@ -56,8 +56,10 @@ const setFavoriteIds = (ids) => {
 
 export default function NearMeProvider() {
   const { id } = useParams();
+  const currentUser = getStoredNearMeUser();
   const [provider, setProvider] = useState(emptyProvider);
   const [reviews, setReviews] = useState([]);
+  const [providerFixedServices, setProviderFixedServices] = useState([]);
   const [customPackages, setCustomPackages] = useState([]);
   const [serviceCatalog, setServiceCatalog] = useState([]);
   const [activeTab, setActiveTab] = useState('about');
@@ -65,19 +67,23 @@ export default function NearMeProvider() {
   const [isFavorite, setIsFavorite] = useState(false);
   const [reviewForm, setReviewForm] = useState({ rating: 0, text: '' });
   const [reviewSubmitting, setReviewSubmitting] = useState(false);
+  const currentUserId = String(currentUser?.id || '').trim();
+  const currentUserRole = String(currentUser?.role || '').trim().toLowerCase();
+  const canCurrentUserReview = Boolean(currentUserId) && ['client', 'customer', 'user'].includes(currentUserRole);
 
   useEffect(() => {
     Promise.all([
       apiRequest(`/api/providers/${id}`),
       apiRequest(`/api/providers/${id}/reviews`).catch(() => []),
-      apiRequest(`/api/v1/custom-packages?providerId=${encodeURIComponent(id)}`).catch(() => []),
+      apiRequest(`/api/v1/providers/${encodeURIComponent(id)}/offers`).catch(() => ({ fixedServices: [], customBundles: [] })),
       apiRequest('/api/v1/services').catch(() => []),
     ])
-      .then(([providerData, reviewData, packagesData, servicesData]) => {
+      .then(([providerData, reviewData, offersData, servicesData]) => {
         const mergedProvider = { ...emptyProvider, ...providerData };
         setProvider(mergedProvider);
         setReviews(Array.isArray(reviewData) ? reviewData : []);
-        setCustomPackages(Array.isArray(packagesData) ? packagesData : []);
+        setProviderFixedServices(Array.isArray(offersData?.fixedServices) ? offersData.fixedServices : []);
+        setCustomPackages(Array.isArray(offersData?.customBundles) ? offersData.customBundles : []);
         setServiceCatalog(Array.isArray(servicesData) ? servicesData : []);
 
         const favorites = getFavoriteIds();
@@ -87,6 +93,7 @@ export default function NearMeProvider() {
       .catch(() => {
         setProvider(emptyProvider);
         setReviews([]);
+        setProviderFixedServices([]);
         setCustomPackages([]);
         setServiceCatalog([]);
         setIsFavorite(false);
@@ -94,20 +101,43 @@ export default function NearMeProvider() {
   }, [id]);
 
   const fixedServices = useMemo(() => {
+    if (providerFixedServices.length > 0) {
+      return providerFixedServices.map((service) => ({
+        id: service._id || service.title,
+        label: service.title || 'Service',
+        category: service.category || provider.serviceId || 'other',
+        description: service.description || 'Fixed price service',
+        price: Number(service.price || 0),
+        durationHours: Number(service.durationHours || 0),
+        durationMinutes: Number(service.durationMinutes || 0),
+      }));
+    }
     const matched = serviceCatalog.find((item) => item.id === provider.serviceId);
     return [{
       id: matched?.id || provider.serviceId || 'other',
       label: matched?.label || provider.service || 'General Service',
       category: matched?.id || provider.serviceId || 'other',
       description: 'Standard base-rate service',
-      price: Number(provider.rate || 0),
+      price: Number(provider.startingRate ?? provider.rate ?? 0),
     }];
-  }, [serviceCatalog, provider.serviceId, provider.service, provider.rate]);
+  }, [providerFixedServices, serviceCatalog, provider.serviceId, provider.service, provider.startingRate, provider.rate]);
+  const displayedStartingRate = useMemo(() => {
+    const fixedPrices = providerFixedServices
+      .map((service) => Number(service?.price || 0))
+      .filter((value) => Number.isFinite(value) && value > 0);
+    if (fixedPrices.length > 0) return Math.min(...fixedPrices);
+    const fromProvider = Number(provider.startingRate ?? provider.rate ?? 0);
+    return Number.isFinite(fromProvider) ? fromProvider : 0;
+  }, [providerFixedServices, provider.startingRate, provider.rate]);
 
   const affiliatedCategories = useMemo(() => {
     const values = new Map();
     const baseService = serviceCatalog.find((item) => item.id === provider.serviceId);
     if (provider.serviceId) values.set(normalizeCategory(provider.serviceId), baseService?.label || provider.service || 'Primary Service');
+    providerFixedServices.forEach((service) => {
+      if (!service.category) return;
+      values.set(normalizeCategory(service.category), service.category);
+    });
     customPackages.forEach((pack) => {
       if (!pack.serviceId) return;
       const info = serviceCatalog.find((item) => item.id === pack.serviceId);
@@ -115,7 +145,7 @@ export default function NearMeProvider() {
     });
     if (values.size === 0) values.set('other', 'Other');
     return Array.from(values.entries()).map(([value, label]) => ({ value, label }));
-  }, [serviceCatalog, provider.serviceId, provider.service, customPackages]);
+  }, [serviceCatalog, provider.serviceId, provider.service, providerFixedServices, customPackages]);
 
   const toggleFavorite = () => {
     const key = String(providerKey(provider));
@@ -155,9 +185,12 @@ export default function NearMeProvider() {
   };
 
   const sendInquiryRequest = async (payload) => {
-    const currentUser = getStoredNearMeUser();
     if (!currentUser || !getStoredToken()) {
       alert('Please log in before contacting a provider.');
+      return;
+    }
+    if (currentUser.role === 'provider' && currentUser.providerStatus !== 'approved') {
+      alert('Your provider account is not approved yet. You cannot hire other providers at this time.');
       return;
     }
 
@@ -186,6 +219,10 @@ export default function NearMeProvider() {
   };
 
   const submitReview = async () => {
+    if (!canCurrentUserReview) {
+      alert('Only client accounts can leave provider reviews.');
+      return;
+    }
     const rating = Number(reviewForm.rating || 0);
     const text = reviewForm.text.trim();
     if (rating < 1) {
@@ -198,30 +235,52 @@ export default function NearMeProvider() {
     }
     setReviewSubmitting(true);
     try {
-      const created = await apiRequest(`/api/providers/${providerKey(provider)}/reviews`, {
+      const response = await apiRequest(`/api/providers/${providerKey(provider)}/reviews`, {
         method: 'POST',
         body: JSON.stringify({ rating, text }),
       });
-      setReviews((current) => [created, ...current]);
-      setProvider((current) => {
-        const nextReviews = Number(current.reviews || 0) + 1;
-        const nextRating = Math.round((((Number(current.rating || 0) * Number(current.reviews || 0)) + rating) / nextReviews) * 10) / 10;
-        return { ...current, reviews: nextReviews, rating: nextRating };
+      const savedReview = response?.review || response;
+      const created = Boolean(response?.created);
+      setReviews((current) => {
+        const filtered = current.filter((item) => String(item?.customerUserId || '') !== currentUserId);
+        return [savedReview, ...filtered];
       });
-      setReviewForm({ rating: 0, text: '' });
-      alert('Review submitted.');
+      if (response?.provider) {
+        setProvider((current) => ({
+          ...current,
+          reviews: Number(response.provider.reviews ?? current.reviews ?? 0),
+          rating: Number(response.provider.rating ?? current.rating ?? 0),
+        }));
+      }
+      setReviewForm({
+        rating: Number(savedReview?.rating || rating),
+        text: String(savedReview?.text || text),
+      });
+      alert(created ? 'Review submitted. You can edit it anytime.' : 'Review updated.');
     } catch (error) {
       alert(error.message || 'Could not submit review');
     } finally {
       setReviewSubmitting(false);
     }
   };
+  const existingClientReview = useMemo(() => (
+    reviews.find((review) => String(review?.customerUserId || '') === currentUserId) || null
+  ), [reviews, currentUserId]);
+
+  useEffect(() => {
+    if (!existingClientReview) return;
+    setReviewForm({
+      rating: Number(existingClientReview.rating || 0),
+      text: String(existingClientReview.text || ''),
+    });
+  }, [existingClientReview]);
 
   const cornerColors = ['bg-bauhaus-red', 'bg-bauhaus-blue', 'bg-bauhaus-yellow'];
   const headerColor = ['bg-bauhaus-blue', 'bg-bauhaus-red', 'bg-bauhaus-ink'];
   const colorIndex = Number(providerKey(provider)) % 3;
   const galleryImages = Array.isArray(provider.gallery) ? provider.gallery.filter(Boolean) : [];
   const certifications = Array.isArray(provider.certifications) ? provider.certifications : [];
+  const hiringLockedForCurrentUser = currentUser?.role === 'provider' && currentUser?.providerStatus !== 'approved';
 
   return (
     <div className="min-h-screen bg-bauhaus-canvas font-outfit">
@@ -278,7 +337,7 @@ export default function NearMeProvider() {
                 </div>
 
                 <div className="grid grid-cols-3 gap-4 mt-5 pt-5 border-t-2 border-bauhaus-ink/10">
-                  {[{ label: 'Jobs Done', value: provider.jobs, color: 'text-bauhaus-blue' }, { label: 'Rating', value: `${provider.rating}★`, color: 'text-bauhaus-yellow' }, { label: 'Rate', value: `PHP ${provider.rate}`, color: 'text-bauhaus-red' }].map((s) => (
+                  {[{ label: 'Jobs Done', value: provider.jobs, color: 'text-bauhaus-blue' }, { label: 'Rating', value: `${provider.rating}★`, color: 'text-bauhaus-yellow' }, { label: 'Starts At', value: `PHP ${displayedStartingRate.toLocaleString('en-PH')}`, color: 'text-bauhaus-red' }].map((s) => (
                     <div key={s.label} className="text-center">
                       <div className={`font-black text-xl ${s.color}`}>{s.value}</div>
                       <div className="font-bold text-[9px] uppercase tracking-widest text-bauhaus-ink/40 mt-0.5">{s.label}</div>
@@ -338,20 +397,27 @@ export default function NearMeProvider() {
 
             {activeTab === 'reviews' && (
               <div className="space-y-4">
-                <div className="bg-white border-2 border-bauhaus-ink p-5">
-                  <div className="font-black text-sm uppercase tracking-tight text-bauhaus-ink">Add Review</div>
-                  <div className="mt-3 flex items-center gap-2">
-                    {[1, 2, 3, 4, 5].map((star) => (
-                      <button key={star} type="button" onClick={() => setReviewForm((current) => ({ ...current, rating: star }))} className={`px-2 py-1 border-2 border-bauhaus-ink font-black text-xs ${reviewForm.rating >= star ? 'bg-bauhaus-yellow text-bauhaus-ink' : 'bg-white text-bauhaus-ink/50'}`}>
-                        {star}★
-                      </button>
-                    ))}
+                {canCurrentUserReview ? (
+                  <div className="bg-white border-2 border-bauhaus-ink p-5">
+                    <div className="font-black text-sm uppercase tracking-tight text-bauhaus-ink">{existingClientReview ? 'Edit Your Review' : 'Add Review'}</div>
+                    <div className="mt-1 font-medium text-xs text-bauhaus-ink/60">One review per client. You can update your review anytime.</div>
+                    <div className="mt-3 flex items-center gap-2">
+                      {[1, 2, 3, 4, 5].map((star) => (
+                        <button key={star} type="button" onClick={() => setReviewForm((current) => ({ ...current, rating: star }))} className={`px-2 py-1 border-2 border-bauhaus-ink font-black text-xs ${reviewForm.rating >= star ? 'bg-bauhaus-yellow text-bauhaus-ink' : 'bg-white text-bauhaus-ink/50'}`}>
+                          {star}★
+                        </button>
+                      ))}
+                    </div>
+                    <textarea value={reviewForm.text} onChange={(e) => setReviewForm((current) => ({ ...current, text: e.target.value }))} rows={3} placeholder="Write your review (10-500 characters)" className="mt-3 w-full px-3 py-3 border-2 border-bauhaus-ink bg-white font-medium text-sm outline-none resize-none" />
+                    <button type="button" onClick={submitReview} disabled={reviewSubmitting} className="mt-3 px-4 py-2 bg-bauhaus-red text-white border-2 border-bauhaus-ink font-black text-[10px] uppercase tracking-wider disabled:opacity-60">
+                      {reviewSubmitting ? 'Saving...' : (existingClientReview ? 'Update Review' : 'Submit Review')}
+                    </button>
                   </div>
-                  <textarea value={reviewForm.text} onChange={(e) => setReviewForm((current) => ({ ...current, text: e.target.value }))} rows={3} placeholder="Write your review (10-500 characters)" className="mt-3 w-full px-3 py-3 border-2 border-bauhaus-ink bg-white font-medium text-sm outline-none resize-none" />
-                  <button type="button" onClick={submitReview} disabled={reviewSubmitting} className="mt-3 px-4 py-2 bg-bauhaus-red text-white border-2 border-bauhaus-ink font-black text-[10px] uppercase tracking-wider disabled:opacity-60">
-                    {reviewSubmitting ? 'Submitting...' : 'Submit Review'}
-                  </button>
-                </div>
+                ) : (
+                  <div className="bg-white border-2 border-bauhaus-ink p-5 font-medium text-sm text-bauhaus-ink/70">
+                    Sign in with a client account to leave a review.
+                  </div>
+                )}
 
                 {reviews.map((rev, i) => (
                   <div key={rev._id || i} className="bg-white border-2 border-bauhaus-ink p-5">
@@ -378,9 +444,9 @@ export default function NearMeProvider() {
           <div className="lg:col-span-1 space-y-5">
             <div className="relative bg-white border-4 border-bauhaus-ink shadow-bauhaus-lg p-6">
               <div className={`absolute top-3 right-3 w-3 h-3 ${cornerColors[colorIndex]}`} />
-              <div className="font-bold text-[10px] uppercase tracking-widest text-bauhaus-ink/40 mb-1">Service Rate</div>
+              <div className="font-bold text-[10px] uppercase tracking-widest text-bauhaus-ink/40 mb-1">Service Starting Price</div>
               <div className="font-black text-4xl text-bauhaus-red">
-                PHP {provider.rate}<span className="text-base text-bauhaus-ink/40 font-medium">/hr</span>
+                PHP {displayedStartingRate.toLocaleString('en-PH')}<span className="text-base text-bauhaus-ink/40 font-medium"> start</span>
               </div>
               <p className="font-medium text-xs text-bauhaus-ink/50 mt-1">Materials charged separately if needed</p>
 
@@ -390,9 +456,24 @@ export default function NearMeProvider() {
               </div>
 
               <div className="space-y-3 mt-5">
-                <button onClick={() => setShowBookModal(true)} className="w-full flex items-center justify-center gap-2 px-6 py-4 bg-bauhaus-red text-white font-bold uppercase text-sm tracking-wider border-2 border-bauhaus-ink shadow-bauhaus-sm transition-all duration-200 hover:bg-bauhaus-red/90 active:translate-x-[2px] active:translate-y-[2px] active:shadow-none">
+                <button
+                  onClick={() => {
+                    if (hiringLockedForCurrentUser) {
+                      alert('Your provider account is not approved yet. You cannot hire other providers at this time.');
+                      return;
+                    }
+                    setShowBookModal(true);
+                  }}
+                  disabled={hiringLockedForCurrentUser}
+                  className="w-full flex items-center justify-center gap-2 px-6 py-4 bg-bauhaus-red text-white font-bold uppercase text-sm tracking-wider border-2 border-bauhaus-ink shadow-bauhaus-sm transition-all duration-200 hover:bg-bauhaus-red/90 active:translate-x-[2px] active:translate-y-[2px] active:shadow-none disabled:opacity-50 disabled:cursor-not-allowed"
+                >
                   <Briefcase className="h-4 w-4" /> Book Service
                 </button>
+                {hiringLockedForCurrentUser && (
+                  <div className="px-3 py-2 border-2 border-bauhaus-ink bg-bauhaus-canvas font-bold text-[11px] text-bauhaus-ink/70">
+                    Hiring is disabled until your provider KYC is approved.
+                  </div>
+                )}
                 <Link to={`/messages?provider=${providerKey(provider)}`} className="w-full flex items-center justify-center gap-2 px-6 py-3 bg-white text-bauhaus-ink font-bold uppercase text-sm tracking-wider border-2 border-bauhaus-ink shadow-[2px_2px_0px_0px_black] transition-all duration-200 hover:bg-bauhaus-canvas active:translate-x-[2px] active:translate-y-[2px] active:shadow-none">
                   <MessageCircle className="h-4 w-4" /> Message
                 </Link>
@@ -425,3 +506,4 @@ export default function NearMeProvider() {
     </div>
   );
 }
+
