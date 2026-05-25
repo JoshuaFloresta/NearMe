@@ -71,7 +71,7 @@ export default function NearMeProvider() {
       apiRequest(`/api/providers/${id}`),
       apiRequest(`/api/providers/${id}/reviews`).catch(() => []),
       apiRequest(`/api/v1/custom-packages?providerId=${encodeURIComponent(id)}`).catch(() => []),
-      apiRequest('/api/v1/services').catch(() => []),
+      apiRequest('/api/services').catch(() => []),
     ])
       .then(([providerData, reviewData, packagesData, servicesData]) => {
         const mergedProvider = { ...emptyProvider, ...providerData };

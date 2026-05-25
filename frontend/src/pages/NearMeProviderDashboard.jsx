@@ -240,6 +240,8 @@ export default function NearMeProviderDashboard({ focusSection = null }) {
   const [serviceBusy, setServiceBusy] = useState(false);
   const [categoryOptions, setCategoryOptions] = useState([{ value: 'other', label: 'Others' }]);
   const [customCategoryInput, setCustomCategoryInput] = useState('');
+  const [fixedCustomCategoryInput, setFixedCustomCategoryInput] = useState('');
+  const [tagCustomCategoryInput, setTagCustomCategoryInput] = useState('');
   const [settingsCategoryPickerValue, setSettingsCategoryPickerValue] = useState('');
   const [fixedCategoryPickerValue, setFixedCategoryPickerValue] = useState('');
   const [tagPickerValue, setTagPickerValue] = useState('');
@@ -330,7 +332,7 @@ export default function NearMeProviderDashboard({ focusSection = null }) {
       apiRequest('/api/v1/jobs').catch(() => []),
       apiRequest(`/api/v1/provider-services?providerUserId=${encodeURIComponent(user?.id || user?._id || '')}`).catch(() => []),
       apiRequest(`/api/v1/custom-packages?providerId=${encodeURIComponent(user?.id || user?._id || '')}`).catch(() => []),
-      apiRequest('/api/v1/services').catch(() => []),
+      apiRequest('/api/services').catch(() => []),
     ]).then(([bookingData, conversationData, reviewData, jobsData, servicesData, bundlesData, categoriesData]) => {
       setProviderBookings(Array.isArray(bookingData) ? bookingData : []);
       setProviderConversations(Array.isArray(conversationData) ? conversationData : []);
@@ -748,11 +750,14 @@ export default function NearMeProviderDashboard({ focusSection = null }) {
   const selectedCertifications = useMemo(() => textToList(settingsForm.certifications), [settingsForm.certifications]);
   const selectedFixedCategories = useMemo(() => textToList(fixedForm.category), [fixedForm.category]);
   const addFixedCategory = () => {
-    const next = toTitleCase(fixedCategoryPickerValue);
+    const next = fixedCategoryPickerValue === 'other'
+      ? toTitleCase(fixedCustomCategoryInput)
+      : toTitleCase(categoryDropdownOptions.find((item) => item.value === fixedCategoryPickerValue)?.label || fixedCategoryPickerValue);
     if (!next) return;
     const merged = Array.from(new Set([...selectedFixedCategories, next]));
     setFixedForm((current) => ({ ...current, category: merged.join(', ') }));
     setFixedCategoryPickerValue('');
+    setFixedCustomCategoryInput('');
   };
   const removeFixedCategory = (value) => {
     const filtered = selectedFixedCategories.filter((item) => item !== value);
@@ -784,11 +789,14 @@ export default function NearMeProviderDashboard({ focusSection = null }) {
     setCustomCategoryInput(next);
   };
   const addTag = () => {
-    const next = toTitleCase(tagPickerValue);
+    const next = tagPickerValue === 'other'
+      ? toTitleCase(tagCustomCategoryInput)
+      : toTitleCase(categoryDropdownOptions.find((item) => item.value === tagPickerValue)?.label || tagPickerValue);
     if (!next) return;
     const merged = Array.from(new Set([...selectedProviderCategories, next]));
     updateSetting('tags', merged.join(', '));
     setTagPickerValue('');
+    setTagCustomCategoryInput('');
   };
   const removeTag = (value) => {
     const filtered = selectedProviderCategories.filter((item) => item !== value);
@@ -1138,7 +1146,9 @@ export default function NearMeProviderDashboard({ focusSection = null }) {
       const providerCategories = (settingsForm.serviceId === 'other' && normalizedCustomCategory)
         ? Array.from(new Set([...baseCategories, normalizedCustomCategory]))
         : baseCategories;
-      const serviceName = toTitleCase(providerCategories[0] || settingsForm.service || normalizedCustomCategory);
+      const serviceName = settingsForm.serviceId === 'other'
+        ? normalizedCustomCategory || toTitleCase(settingsForm.service)
+        : toTitleCase(providerCategories[0] || settingsForm.service || normalizedCustomCategory);
       const matched = categoryDropdownOptions.find((item) => toTitleCase(item.label) === serviceName);
       const serviceId = matched?.value || slugify(serviceName) || 'other';
       if (!serviceName) {
@@ -1693,12 +1703,24 @@ export default function NearMeProviderDashboard({ focusSection = null }) {
                                   className="w-full px-3 py-2 border-2 border-bauhaus-ink bg-white font-bold text-sm outline-none"
                                 >
                                   <option value="">Select category</option>
-                                  {categoryDropdownOptions.filter((item) => item.value !== 'other').map((item) => (
-                                    <option key={`fixed-category-${item.value}`} value={item.label}>{item.label}</option>
+                                  {categoryDropdownOptions.map((item) => (
+                                    <option key={`fixed-category-${item.value}`} value={item.value}>{item.label}</option>
                                   ))}
                                 </select>
                                 <button type="button" onClick={addFixedCategory} className="px-3 py-2 bg-bauhaus-blue text-white border-2 border-bauhaus-ink font-black text-[10px] uppercase tracking-wider">Add</button>
                               </div>
+                              {fixedCategoryPickerValue === 'other' && (
+                                <div className="mt-2 flex gap-2">
+                                  <input
+                                    value={fixedCustomCategoryInput}
+                                    onChange={(e) => setFixedCustomCategoryInput(e.target.value)}
+                                    onBlur={() => setFixedCustomCategoryInput(toTitleCase(fixedCustomCategoryInput))}
+                                    placeholder="Type the category name"
+                                    className="w-full px-3 py-2 border-2 border-bauhaus-ink bg-white font-bold text-sm outline-none focus:border-bauhaus-blue"
+                                  />
+                                  <button type="button" onClick={addFixedCategory} className="px-3 py-2 bg-bauhaus-red text-white border-2 border-bauhaus-ink font-black text-[10px] uppercase tracking-wider">Use</button>
+                                </div>
+                              )}
                             </div>
                             <div className="mt-2 border border-dashed border-bauhaus-ink p-2 font-black text-xs text-bauhaus-ink min-h-[44px]">
                               {selectedFixedCategories.length > 0 ? selectedFixedCategories.join(', ') : 'No selected categories'}
@@ -2062,12 +2084,24 @@ export default function NearMeProviderDashboard({ focusSection = null }) {
                               className="w-full px-3 py-2 border-2 border-bauhaus-ink bg-white font-bold text-sm outline-none focus:border-bauhaus-blue"
                             >
                               <option value="">Select category</option>
-                              {categoryDropdownOptions.filter((item) => item.value !== 'other').map((item) => (
-                                <option key={`tag-${item.value}`} value={item.label}>{item.label}</option>
+                              {categoryDropdownOptions.map((item) => (
+                                <option key={`tag-${item.value}`} value={item.value}>{item.label}</option>
                               ))}
                             </select>
                             <button type="button" onClick={addTag} className="px-3 py-2 bg-bauhaus-blue text-white border-2 border-bauhaus-ink font-black text-[10px] uppercase tracking-wider">Add</button>
                           </div>
+                          {tagPickerValue === 'other' && (
+                            <div className="mt-2 flex gap-2">
+                              <input
+                                value={tagCustomCategoryInput}
+                                onChange={(e) => setTagCustomCategoryInput(e.target.value)}
+                                onBlur={() => setTagCustomCategoryInput(toTitleCase(tagCustomCategoryInput))}
+                                placeholder="Type the tag name"
+                                className="w-full px-3 py-2 border-2 border-bauhaus-ink bg-white font-bold text-sm outline-none focus:border-bauhaus-blue"
+                              />
+                              <button type="button" onClick={addTag} className="px-3 py-2 bg-bauhaus-red text-white border-2 border-bauhaus-ink font-black text-[10px] uppercase tracking-wider">Use</button>
+                            </div>
+                          )}
                         </div>
                         <div className="mt-2 border border-dashed border-bauhaus-ink p-2 font-black text-xs text-bauhaus-ink min-h-[44px]">
                           {selectedProviderCategories.length > 0 ? selectedProviderCategories.join(', ') : 'No selected tags'}
