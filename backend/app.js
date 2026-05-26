@@ -20,7 +20,10 @@ const isDeployedRuntime = process.env.NODE_ENV === 'production'
   || Boolean(process.env.VERCEL)
   || Boolean(process.env.RAILWAY_ENVIRONMENT_ID);
 const normalizeOrigin = (origin = '') => origin.trim().replace(/\/+$/, '');
-export const allowedOrigins = (process.env.CLIENT_ORIGIN || 'http://localhost:5173,http://127.0.0.1:5173')
+const configuredOrigins = [process.env.CLIENT_ORIGIN, process.env.FRONTEND_URL]
+  .filter(Boolean)
+  .join(',');
+export const allowedOrigins = (configuredOrigins || 'http://localhost:5173,http://127.0.0.1:5173')
   .split(/[\s,]+/)
   .map(normalizeOrigin)
   .filter(Boolean);
@@ -76,11 +79,17 @@ export const ensureInitialized = () => {
 
 app.use((req, res, next) => {
   const requestOrigin = normalizeOrigin(req.headers.origin);
-  const corsOrigin = isAllowedOrigin(requestOrigin) && requestOrigin
-    ? requestOrigin
-    : allowedOrigins[0] || '*';
+  const originAllowed = isAllowedOrigin(requestOrigin);
 
-  res.header('Access-Control-Allow-Origin', corsOrigin);
+  if (requestOrigin && !originAllowed) {
+    return res.status(403).json({ error: 'Origin not allowed by CORS' });
+  }
+
+  if (requestOrigin && originAllowed) {
+    res.header('Access-Control-Allow-Origin', requestOrigin);
+  } else if (!requestOrigin && allowedOrigins[0]) {
+    res.header('Access-Control-Allow-Origin', allowedOrigins[0]);
+  }
   res.header('Vary', 'Origin');
   res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization, X-Admin-Role, X-Admin-User-Id');
   res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
