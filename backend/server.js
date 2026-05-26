@@ -36,6 +36,7 @@ io.on('connection', (socket) => {
 });
 
 const PORT = process.env.PORT || 5000;
+const HOST = process.env.HOST || '0.0.0.0';
 
 httpServer.on('error', (error) => {
   if (error.code === 'EADDRINUSE') {
@@ -49,7 +50,7 @@ httpServer.on('error', (error) => {
 
 ensureInitialized()
   .then(() => {
-    httpServer.listen(PORT, () => console.log(`Server running on http://localhost:${PORT}`));
+    httpServer.listen(PORT, HOST, () => console.log(`Server running on http://${HOST}:${PORT}`));
   })
   .catch((error) => {
     console.error('Server failed to start:', error);

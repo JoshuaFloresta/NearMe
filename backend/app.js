@@ -16,18 +16,25 @@ import { normalizeProviderGeoLocations } from './geo.js';
 dotenv.config({ path: fileURLToPath(new URL('./.env', import.meta.url)) });
 
 const app = express();
-const isDeployedRuntime = process.env.NODE_ENV === 'production' || Boolean(process.env.VERCEL);
+const isDeployedRuntime = process.env.NODE_ENV === 'production'
+  || Boolean(process.env.VERCEL)
+  || Boolean(process.env.RAILWAY_ENVIRONMENT_ID);
+const normalizeOrigin = (origin = '') => origin.trim().replace(/\/+$/, '');
 export const allowedOrigins = (process.env.CLIENT_ORIGIN || 'http://localhost:5173,http://127.0.0.1:5173')
-  .split(',')
-  .map((origin) => origin.trim())
+  .split(/[\s,]+/)
+  .map(normalizeOrigin)
   .filter(Boolean);
 const isLocalDevOrigin = (origin = '') => /^http:\/\/(localhost|127\.0\.0\.1|\[::1\]):\d+$/i.test(origin);
-export const isAllowedOrigin = (origin) => (
-  !origin
-  || allowedOrigins.includes('*')
-  || allowedOrigins.includes(origin)
-  || (!isDeployedRuntime && isLocalDevOrigin(origin))
-);
+export const isAllowedOrigin = (origin) => {
+  const normalizedOrigin = normalizeOrigin(origin);
+
+  return (
+    !normalizedOrigin
+    || allowedOrigins.includes('*')
+    || allowedOrigins.includes(normalizedOrigin)
+    || (!isDeployedRuntime && isLocalDevOrigin(normalizedOrigin))
+  );
+};
 
 let initializationPromise;
 
@@ -68,7 +75,7 @@ export const ensureInitialized = () => {
 };
 
 app.use((req, res, next) => {
-  const requestOrigin = req.headers.origin;
+  const requestOrigin = normalizeOrigin(req.headers.origin);
   const corsOrigin = isAllowedOrigin(requestOrigin) && requestOrigin
     ? requestOrigin
     : allowedOrigins[0] || '*';
