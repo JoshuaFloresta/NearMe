@@ -14,7 +14,7 @@ const jwtSecret = () => {
   const secret = process.env.JWT_SECRET || process.env.SESSION_SECRET;
   if (secret) return secret;
 
-  if (process.env.NODE_ENV === 'production') {
+  if (process.env.NODE_ENV === 'production' || process.env.VERCEL) {
     throw new Error('JWT_SECRET is required in production');
   }
 

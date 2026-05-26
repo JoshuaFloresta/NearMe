@@ -11,7 +11,7 @@ export const connectDB = async () => {
   if (db) return db;
 
   if (!process.env.MONGODB_URI) {
-    throw new Error('MONGODB_URI is missing from backend/.env');
+    throw new Error('MONGODB_URI is missing from the backend environment variables');
   }
 
   client = new MongoClient(process.env.MONGODB_URI, {
@@ -26,7 +26,7 @@ export const connectDB = async () => {
   } catch (error) {
     console.error('MongoDB connection failed:', error);
     console.error('Check that your MongoDB Atlas cluster allows your current IP address and that port 27017 is not blocked by your network/firewall.');
-    process.exit(1);
+    throw error;
   }
 };
 

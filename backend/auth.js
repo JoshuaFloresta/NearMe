@@ -39,6 +39,7 @@ const createOtp = () => String(crypto.randomInt(100000, 999999));
 const PASSWORD_RESET_PURPOSE = 'password_reset';
 const RESET_TOKEN_TTL_MS = 10 * 60 * 1000;
 const resetTokenHash = (value) => crypto.createHash('sha256').update(String(value || '')).digest('hex');
+const isDeployedRuntime = process.env.NODE_ENV === 'production' || Boolean(process.env.VERCEL);
 
 router.post('/otp/send', async (req, res) => {
   try {
@@ -90,7 +91,7 @@ router.post('/otp/send', async (req, res) => {
         ? 'If that account exists, a password reset code has been sent.'
         : 'OTP sent successfully',
       expiresAt,
-      devOtp: process.env.NODE_ENV === 'production' ? undefined : code,
+      devOtp: isDeployedRuntime ? undefined : code,
     });
   } catch (error) {
     res.status(500).json({ error: error.message });

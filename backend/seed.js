@@ -26,8 +26,14 @@ export const seedDatabase = async (db) => {
   }
 
   if (await usersCollection.countDocuments({ role: { $in: ['admin', 'super_admin'] } }) === 0) {
-    const email = process.env.SEED_ADMIN_EMAIL || 'admin@nearme.local';
-    const password = process.env.SEED_ADMIN_PASSWORD || 'Admin12345';
+    const isProduction = process.env.NODE_ENV === 'production' || Boolean(process.env.VERCEL);
+    const email = process.env.SEED_ADMIN_EMAIL || (isProduction ? '' : 'admin@nearme.local');
+    const password = process.env.SEED_ADMIN_PASSWORD || (isProduction ? '' : 'Admin12345');
+
+    if (!email || !password) {
+      console.warn('No admin account was seeded. Set SEED_ADMIN_EMAIL and SEED_ADMIN_PASSWORD in production.');
+      return;
+    }
 
     await usersCollection.updateOne(
       { email },
