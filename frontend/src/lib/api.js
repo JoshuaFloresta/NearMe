@@ -71,8 +71,8 @@ export const uploadImage = async (file, purpose = 'general') => {
     throw new Error('Please choose an image file');
   }
 
-  if (file.size > 5 * 1024 * 1024) {
-    throw new Error('Please choose an image under 5 MB');
+  if (file.size > 3 * 1024 * 1024) {
+    throw new Error('Please choose an image under 3 MB');
   }
 
   const fileData = await fileToDataUrl(file);

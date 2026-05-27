@@ -5,6 +5,7 @@ import { emitAlert } from '../realtime.js';
 import { isAdminRole, requireAdmin, requireAuth } from '../security.js';
 
 const router = express.Router();
+const MAX_KYC_IMAGE_DATA_URL_LENGTH = 1_250_000;
 
 router.post('/provider-kyc', requireAuth, async (req, res) => {
   try {
@@ -24,6 +25,12 @@ router.post('/provider-kyc', requireAuth, async (req, res) => {
 
     if (missingSlots.length > 0) {
       return res.status(400).json({ error: 'Front ID, Back ID, and Selfie photos are required' });
+    }
+    if (submittedDocuments.some((doc) => typeof doc.dataUrl !== 'string' || !doc.dataUrl.startsWith('data:image/'))) {
+      return res.status(400).json({ error: 'KYC documents must be image files' });
+    }
+    if (submittedDocuments.some((doc) => doc.dataUrl.length > MAX_KYC_IMAGE_DATA_URL_LENGTH)) {
+      return res.status(400).json({ error: 'Each KYC image must be under 900 KB' });
     }
 
     const submission = {

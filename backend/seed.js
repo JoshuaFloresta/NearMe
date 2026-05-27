@@ -17,13 +17,24 @@ export const seedDatabase = async (db) => {
   const servicesCollection = db.collection('services');
   const usersCollection = db.collection('users');
 
-  if (await servicesCollection.countDocuments() === 0) {
-    await servicesCollection.insertMany(defaultServices.map((service) => ({
-      ...service,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    })));
-  }
+  await Promise.all(defaultServices.map(async (service) => {
+    try {
+      await servicesCollection.updateOne(
+        { id: service.id },
+        {
+          $setOnInsert: {
+            ...service,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          },
+        },
+        { upsert: true }
+      );
+    } catch (error) {
+      // Concurrent cold starts can both attempt the same unique service insert.
+      if (error?.code !== 11000) throw error;
+    }
+  }));
 
   if (await usersCollection.countDocuments({ role: { $in: ['admin', 'super_admin'] } }) === 0) {
     const isProduction = process.env.NODE_ENV === 'production' || Boolean(process.env.VERCEL);

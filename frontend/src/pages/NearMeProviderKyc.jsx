@@ -16,6 +16,8 @@ const documentSlots = [
   { key: 'backId', label: 'Back ID', hint: 'Clear photo of the back side' },
   { key: 'selfie', label: 'Selfie', hint: 'Face camera with your ID visible' },
 ];
+const MAX_KYC_IMAGE_BYTES = 900 * 1024;
+const MAX_KYC_IMAGE_DATA_URL_LENGTH = 1_250_000;
 
 export default function NearMeProviderKyc() {
   const navigate = useNavigate();
@@ -91,8 +93,8 @@ export default function NearMeProviderKyc() {
       return;
     }
 
-    if (file.size > 2 * 1024 * 1024) {
-      toast.error(`${file.name} is over 2 MB`);
+    if (file.size > MAX_KYC_IMAGE_BYTES) {
+      toast.error(`${file.name} is over 900 KB. Smaller photos keep verification uploads reliable.`);
       return;
     }
 
@@ -151,12 +153,18 @@ export default function NearMeProviderKyc() {
     context.drawImage(video, 0, 0, width, height);
     const slotConfig = documentSlots.find((item) => item.key === cameraSlot);
 
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.72);
+    if (dataUrl.length > MAX_KYC_IMAGE_DATA_URL_LENGTH) {
+      toast.error('Captured photo is too large. Please try again with a simpler background or upload a smaller photo.');
+      return;
+    }
+
     setDocument(cameraSlot, {
       slot: cameraSlot,
       label: slotConfig?.label || cameraSlot,
       name: `${cameraSlot}-${Date.now()}.jpg`,
       type: 'image/jpeg',
-      dataUrl: canvas.toDataURL('image/jpeg', 0.86),
+      dataUrl,
       source: 'camera',
       capturedAt: new Date().toISOString(),
     });

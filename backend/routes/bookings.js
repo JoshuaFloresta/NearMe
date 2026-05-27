@@ -2,7 +2,7 @@ import express from 'express';
 import { ObjectId } from 'mongodb';
 import { getDB } from '../mongoConnect.js';
 import { emitAlert } from '../realtime.js';
-import { requireAuth } from '../security.js';
+import { isAdminRole, requireAuth } from '../security.js';
 
 const router = express.Router();
 const bookedJobStates = ['Accepted', 'In Progress', 'Pending Payment', 'Pending Verification'];
@@ -12,11 +12,17 @@ const parseHHMMToMinutes = (value, fallback) => {
   return (hour * 60) + minute;
 };
 
-router.get('/bookings', async (req, res) => {
+router.get('/bookings', requireAuth, async (req, res) => {
   try {
     const query = {};
     if (req.query.email) query.customerEmail = req.query.email.toLowerCase();
     if (req.query.providerId) query.providerKey = String(req.query.providerId);
+    if (!isAdminRole(req.user.role)) {
+      query.$or = [
+        { customerUserId: String(req.user._id) },
+        { providerUserId: String(req.user._id) },
+      ];
+    }
 
     const bookings = await getDB().collection('bookings').find(query).sort({ createdAt: -1 }).toArray();
     res.json(bookings);
@@ -148,7 +154,7 @@ router.post('/bookings', requireAuth, async (req, res) => {
   }
 });
 
-router.patch('/bookings/:id/status', async (req, res) => {
+router.patch('/bookings/:id/status', requireAuth, async (req, res) => {
   try {
     if (!ObjectId.isValid(req.params.id)) {
       return res.status(400).json({ error: 'Invalid booking ID' });
@@ -157,6 +163,13 @@ router.patch('/bookings/:id/status', async (req, res) => {
     const allowedStatuses = ['requested', 'provider_accepted', 'customer_confirmed', 'in_progress', 'completed', 'reviewed', 'cancelled'];
     if (!allowedStatuses.includes(req.body.status)) {
       return res.status(400).json({ error: 'Invalid booking status' });
+    }
+
+    const booking = await getDB().collection('bookings').findOne({ _id: new ObjectId(req.params.id) });
+    if (!booking) return res.status(404).json({ error: 'Booking not found' });
+    const participantIds = [booking.customerUserId, booking.providerUserId].map(String);
+    if (!isAdminRole(req.user.role) && !participantIds.includes(String(req.user._id))) {
+      return res.status(403).json({ error: 'Booking access denied' });
     }
 
     const result = await getDB().collection('bookings').findOneAndUpdate(
@@ -175,7 +188,6 @@ router.patch('/bookings/:id/status', async (req, res) => {
       { returnDocument: 'after' }
     );
 
-    if (!result) return res.status(404).json({ error: 'Booking not found' });
     emitAlert('booking:status-updated', result);
     res.json(result);
   } catch (error) {

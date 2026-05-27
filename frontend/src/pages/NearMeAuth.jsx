@@ -80,7 +80,6 @@ export default function NearMeAuth() {
         phone: form.phone,
         password: form.password,
         role,
-        otpVerified: true,
       }),
     });
 

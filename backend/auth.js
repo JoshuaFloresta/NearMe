@@ -201,16 +201,12 @@ router.post('/password/reset', async (req, res) => {
 
 router.post('/signup', async (req, res) => {
   try {
-    const { fname, lname, name, email, phone, password, role, otpVerified } = req.body;
+    const { fname, lname, name, email, phone, password, role } = req.body;
     const normalizedEmail = email?.trim().toLowerCase();
     const displayName = name || [fname, lname].filter(Boolean).join(' ').trim();
 
     if (!normalizedEmail || !password || !displayName) {
       return res.status(400).json({ error: 'Name, email, and password are required' });
-    }
-
-    if (!otpVerified) {
-      return res.status(400).json({ error: 'OTP verification is required' });
     }
 
     const users = getDB().collection('users');
@@ -225,6 +221,22 @@ router.post('/signup', async (req, res) => {
       if (existingPhone) {
         return res.status(409).json({ error: 'Phone number already registered' });
       }
+    }
+
+    const verifiedOtp = await getDB().collection('otp_verifications').findOneAndUpdate(
+      {
+        identifier: normalizedEmail,
+        purpose: 'signup',
+        consumed: true,
+        verifiedAt: { $exists: true },
+        signupConsumedAt: { $exists: false },
+        expiresAt: { $gt: new Date() },
+      },
+      { $set: { signupConsumedAt: new Date() } },
+      { returnDocument: 'after' }
+    );
+    if (!verifiedOtp) {
+      return res.status(400).json({ error: 'OTP verification is required' });
     }
 
     const normalizedRole = normalizeRole(role || 'customer');
@@ -312,10 +324,14 @@ router.get('/users/:id', requireAuth, async (req, res) => {
   }
 });
 
-router.patch('/users/:id', async (req, res) => {
+router.patch('/users/:id', requireAuth, async (req, res) => {
   try {
     if (!ObjectId.isValid(req.params.id)) {
       return res.status(400).json({ error: 'Invalid user ID' });
+    }
+
+    if (!['admin', 'super_admin'].includes(normalizeRole(req.user?.role)) && String(req.user?._id) !== req.params.id) {
+      return res.status(403).json({ error: 'You can only update your own account' });
     }
 
     const { fname, lname, name, email, phone, avatar } = req.body;

@@ -1,5 +1,6 @@
 import crypto from 'crypto';
 import express from 'express';
+import { requireAuth } from '../security.js';
 
 const router = express.Router();
 
@@ -32,7 +33,7 @@ const folderFor = (purpose = 'general') => {
   return `nearme/${safePurpose || 'general'}`;
 };
 
-router.post('/uploads/image', async (req, res) => {
+router.post('/uploads/image', requireAuth, async (req, res) => {
   try {
     const cloudinary = parseCloudinaryUrl();
     if (!cloudinary?.cloudName || !cloudinary?.apiKey || !cloudinary?.apiSecret) {
@@ -44,8 +45,9 @@ router.post('/uploads/image', async (req, res) => {
       return res.status(400).json({ error: 'An image data URL is required' });
     }
 
-    if (file.length > 6_500_000) {
-      return res.status(400).json({ error: 'Image is too large. Please choose an image under 5 MB.' });
+    // Keep base64 JSON requests below Vercel Functions' 4.5 MB body limit.
+    if (file.length > 4_250_000) {
+      return res.status(400).json({ error: 'Image is too large. Please choose an image under 3 MB.' });
     }
 
     const timestamp = Math.round(Date.now() / 1000);

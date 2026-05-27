@@ -30,28 +30,45 @@ npm run dev
 
 ## Production Deployment
 
-### Backend on Railway
+### Backend on Vercel (REST API)
 
-1. Create a Railway service from this repo.
-2. Set service **Root Directory** to `backend`.
-3. Add backend environment variables:
+Vercel Functions support this backend's Express REST API, but not the Socket.IO
+server in `backend/server.js`. Deploying to Vercel therefore provides API
+requests without realtime push notifications.
+
+1. Create a second Vercel project for the backend from this repository.
+2. Set project **Root Directory** to `backend`.
+3. Keep the included `backend/vercel.json`; it sends `/api/*` requests to the Express Function in `backend/api/index.js`.
+4. Add backend environment variables:
    - `MONGODB_URI`
    - `MONGODB_DB` (for example `NearMe`)
    - `JWT_SECRET`
-   - `CLIENT_ORIGIN` (comma-separated allowed frontend URLs)
-   - optional integrations (`CLOUDINARY_URL`, `PAYMONGO_*`, etc.)
-4. Do **not** set `PORT` manually on Railway.
-5. Deploy and verify:
-   - `https://<your-railway-domain>/api/health`
+   - `CLIENT_ORIGIN=https://<your-frontend-domain>` (comma-separated if needed)
+   - `FRONTEND_URL=https://<your-frontend-domain>`
+   - `SEED_ADMIN_EMAIL` and `SEED_ADMIN_PASSWORD` for the first admin account
+   - `CLOUDINARY_URL` if image uploads are used
+   - `PAYMONGO_*` if cashless payment is used
+5. Do not add `PORT`; Vercel manages Function execution.
+6. In MongoDB Atlas, allow connections from the deployed runtime and use a database user in `MONGODB_URI`.
+7. Deploy and verify `https://<your-backend-domain>/api/health`.
 
-### Frontend on Vercel
+### Connect the Existing Frontend
 
-1. Create a Vercel project from this repo (or from `frontend/`).
-2. Prefer project **Root Directory** = `frontend`.
-3. Add frontend environment variables:
-   - `VITE_API_URL=https://<your-railway-domain>`
-   - `VITE_REALTIME_ENABLED=true` only if Socket.IO should be enabled in production
-4. Redeploy after env updates.
+1. Set `VITE_API_URL=https://<your-backend-domain>` in the frontend Vercel project.
+2. Set `VITE_REALTIME_ENABLED=false` because Vercel does not run the Socket.IO backend.
+3. Redeploy the frontend after changing environment variables.
+
+### If Realtime Is Required
+
+Deploy `backend/` to a long-running host such as Railway instead of Vercel, using
+`npm start`, and set `VITE_REALTIME_ENABLED=true` in the frontend project. The
+existing `server.js` entrypoint hosts both the REST API and Socket.IO on that path.
+
+### Production Readiness Note
+
+Signup and password-reset OTP records are validated by the backend, but this
+repository does not yet send codes through email or SMS. Connect an OTP delivery
+provider before enabling those flows for real users.
 
 ## Common Issues
 
@@ -60,11 +77,18 @@ npm run dev
   - Verify backend `/api/health` works.
   - Ensure `CLIENT_ORIGIN` includes the exact Vercel domain.
 
-- Railway stuck in build:
-  - Confirm backend `package.json` has a `build` script.
-  - Confirm service root is `backend`.
+- `API database initialization failed` or a failing health endpoint:
+  - Confirm `MONGODB_URI` and `MONGODB_DB`.
+  - Confirm MongoDB Atlas network access permits the deployment runtime.
+
+- `JWT_SECRET is required in production`:
+  - Add a long random `JWT_SECRET` to the backend Vercel environment variables.
 
 - WebSocket (`/socket.io`) errors:
-  - Add frontend domain to `CLIENT_ORIGIN`.
-  - Set `VITE_REALTIME_ENABLED=false` to disable realtime temporarily.
+  - Set `VITE_REALTIME_ENABLED=false` when the API is hosted on Vercel.
+  - Use a long-running backend host when realtime is required.
 
+- Image upload returns a payload-size error:
+  - Vercel Functions accept request/response bodies up to 4.5 MB.
+  - This app limits uploaded images to 3 MB because images are sent as base64 JSON.
+  - KYC photos are capped at 900 KB each so three private document images can be submitted in one request without moving them into public image storage.
