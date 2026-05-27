@@ -93,6 +93,13 @@ app.use((req, res, next) => {
   const originAllowed = isAllowedOrigin(requestOrigin);
 
   if (requestOrigin && !originAllowed) {
+    console.warn('[CORS] Rejected origin', {
+      origin: requestOrigin,
+      method: req.method,
+      path: req.originalUrl,
+      allowedOrigins,
+      allowedVercelPreviewPrefixes,
+    });
     return res.status(403).json({ error: 'Origin not allowed by CORS' });
   }
 
