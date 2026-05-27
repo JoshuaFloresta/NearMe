@@ -27,6 +27,16 @@ export const allowedOrigins = (configuredOrigins || 'http://localhost:5173,http:
   .split(/[\s,]+/)
   .map(normalizeOrigin)
   .filter(Boolean);
+const allowedVercelPreviewPrefixes = allowedOrigins
+  .map((origin) => {
+    const match = origin.match(/^https:\/\/([a-z0-9-]+)\.vercel\.app$/i);
+    return match ? `https://${match[1]}-` : null;
+  })
+  .filter(Boolean);
+const isAllowedVercelPreviewOrigin = (origin = '') =>
+  allowedVercelPreviewPrefixes.some(
+    (prefix) => origin.startsWith(prefix) && origin.endsWith('.vercel.app'),
+  );
 const isLocalDevOrigin = (origin = '') => /^http:\/\/(localhost|127\.0\.0\.1|\[::1\]):\d+$/i.test(origin);
 export const isAllowedOrigin = (origin) => {
   const normalizedOrigin = normalizeOrigin(origin);
@@ -35,6 +45,7 @@ export const isAllowedOrigin = (origin) => {
     !normalizedOrigin
     || allowedOrigins.includes('*')
     || allowedOrigins.includes(normalizedOrigin)
+    || isAllowedVercelPreviewOrigin(normalizedOrigin)
     || (!isDeployedRuntime && isLocalDevOrigin(normalizedOrigin))
   );
 };
