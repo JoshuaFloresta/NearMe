@@ -56,9 +56,10 @@ requests without realtime push notifications.
 
 ### Connect the Existing Frontend
 
-1. Set `VITE_API_URL=https://<your-backend-domain>` in the frontend Vercel project.
-2. Set `VITE_REALTIME_ENABLED=false` because Vercel does not run the Socket.IO backend.
-3. Redeploy the frontend after changing environment variables.
+1. Deploy the repository-root frontend project with the included `vercel.json`. It installs dependencies from `frontend/package-lock.json`, builds `frontend/`, and serves `frontend/dist`.
+2. Set `VITE_API_URL=https://<your-backend-domain>` in the frontend Vercel project.
+3. Set `VITE_REALTIME_ENABLED=false` because Vercel does not run the Socket.IO backend.
+4. Redeploy the frontend after changing environment variables.
 
 ### If Realtime Is Required
 
