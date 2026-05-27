@@ -48,9 +48,11 @@ requests without realtime push notifications.
    - `SEED_ADMIN_EMAIL` and `SEED_ADMIN_PASSWORD` for the first admin account
    - `CLOUDINARY_URL` if image uploads are used
    - `PAYMONGO_*` if cashless payment is used
+   Add them to the Vercel backend project for the **Production** environment,
+   not only your local `.env` file or the frontend project.
 5. Do not add `PORT`; Vercel manages Function execution.
-6. In MongoDB Atlas, allow connections from the deployed runtime and use a database user in `MONGODB_URI`.
-7. Deploy and verify `https://<your-backend-domain>/api/health`.
+6. In MongoDB Atlas, allow connections from the deployed runtime and use a database user in `MONGODB_URI`. Vercel Functions do not have a single fixed outbound IP on standard deployments; if Atlas requires `0.0.0.0/0`, protect access with a dedicated database user and a strong password.
+7. Redeploy the backend after setting environment variables, then verify `https://<your-backend-domain>/api/health`.
 
 ### Connect the Existing Frontend
 
@@ -78,8 +80,11 @@ provider before enabling those flows for real users.
   - Ensure `CLIENT_ORIGIN` includes the exact Vercel domain.
 
 - `API database initialization failed` or a failing health endpoint:
-  - Confirm `MONGODB_URI` and `MONGODB_DB`.
-  - Confirm MongoDB Atlas network access permits the deployment runtime.
+  - Open `https://<your-backend-domain>/api/health` and inspect its `code`.
+  - `MONGODB_URI_MISSING`: add `MONGODB_URI` to the backend project's Production environment and redeploy.
+  - `MONGODB_URI_INVALID`: copy a valid MongoDB Atlas Node.js connection string and URL-encode special characters in the username or password.
+  - `MONGODB_AUTH_FAILED`: verify the Atlas database user's username, password, and database permissions.
+  - `MONGODB_NETWORK_ERROR` or `MONGODB_UNREACHABLE`: confirm Atlas Network Access permits Vercel Function connections and that the cluster is running.
 
 - `JWT_SECRET is required in production`:
   - Add a long random `JWT_SECRET` to the backend Vercel environment variables.

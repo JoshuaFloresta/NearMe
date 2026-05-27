@@ -88,6 +88,25 @@ export const ensureInitialized = () => {
   return initializationPromise;
 };
 
+const databaseFailureCode = (error) => {
+  const message = String(error?.message || '');
+  const codeName = String(error?.codeName || '');
+
+  if (message.includes('MONGODB_URI is missing')) return 'MONGODB_URI_MISSING';
+  if (error?.name === 'MongoParseError' || /connection string/i.test(message)) return 'MONGODB_URI_INVALID';
+  if (error?.code === 18 || codeName === 'AuthenticationFailed' || /authentication failed/i.test(message)) {
+    return 'MONGODB_AUTH_FAILED';
+  }
+  if (/querySrv|ENOTFOUND|EAI_AGAIN|DNSHostNotFound|ECONNREFUSED/i.test(message)) {
+    return 'MONGODB_NETWORK_ERROR';
+  }
+  if (error?.name === 'MongoServerSelectionError' || /server selection/i.test(message)) {
+    return 'MONGODB_UNREACHABLE';
+  }
+
+  return 'DATABASE_INITIALIZATION_FAILED';
+};
+
 app.use((req, res, next) => {
   const requestOrigin = normalizeOrigin(req.headers.origin);
   const originAllowed = isAllowedOrigin(requestOrigin);
@@ -120,18 +139,31 @@ app.use((req, res, next) => {
 });
 app.use(express.json({ limit: '8mb' }));
 
+app.get('/api/health', async (req, res) => {
+  try {
+    const db = await ensureInitialized();
+    res.json({ status: 'ok', service: 'NearMe API', database: db.databaseName });
+  } catch (error) {
+    const code = databaseFailureCode(error);
+    console.error(`API health check failed (${code}):`, error);
+    res.status(503).json({
+      status: 'error',
+      service: 'NearMe API',
+      database: 'unavailable',
+      code,
+    });
+  }
+});
+
 app.use(async (req, res, next) => {
   try {
     await ensureInitialized();
     next();
   } catch (error) {
-    console.error('API initialization failed:', error);
-    res.status(503).json({ error: 'API database initialization failed' });
+    const code = databaseFailureCode(error);
+    console.error(`API initialization failed (${code}):`, error);
+    res.status(503).json({ error: 'API database initialization failed', code });
   }
-});
-
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', service: 'NearMe API' });
 });
 
 app.use('/api/auth', authRoutes);
